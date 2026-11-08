@@ -376,6 +376,21 @@ export default class Spaces extends View {
     openOverlay({ mod: "menu", kind: "popup", width: 200, height: 260, props: { tab: "space", target: { id: w.id } } });
   }
 
+  subrepoMenu(space, sub) {
+    openOverlay({
+      mod: "subrepo-menu",
+      kind: "popup",
+      width: 220,
+      height: 160,
+      props: {
+        sub,
+        spaceId: space.id,
+        machine: space.machine ?? null,
+        folder: sub.path,
+      },
+    });
+  }
+
   orderingDue(now) {
     return this.ordering && now - this.ordering.at >= 1000
       && this.ordering.machines.every(name => machines().some(m => m.name === name && m.layout === "ready"));
@@ -471,6 +486,7 @@ export default class Spaces extends View {
         }
         cx.notify();
       })
+      .on_mouse_down("right", () => this.subrepoMenu(space, sub))
       .child(
         h_flex()
           .gap(7)
