@@ -509,37 +509,33 @@ export default class Spaces extends View {
     return rootNode;
   }
 
-  renderSubrepoTree(space, node, depth, hasParentFolder, t) {
+  renderSubrepoTree(space, node, depth, hasParentFolder, activeCwds, t) {
     const rows = [];
     const dirList = [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
     const repoList = [...node.repos].sort((a, b) => a.name.localeCompare(b.name));
 
     for (const dir of dirList) {
       const isFolded = this.subfoldersFolded.has(`${space.id}:${dir.relPath}`);
-      rows.push(this.subfolderRow(space, dir, depth, t));
+      rows.push(this.subfolderRow(space, dir, depth, activeCwds, t));
       if (!isFolded) {
-        rows.push(...this.renderSubrepoTree(space, dir, depth + 1, true, t));
+        rows.push(...this.renderSubrepoTree(space, dir, depth + 1, true, activeCwds, t));
       }
     }
 
     for (let i = 0; i < repoList.length; i++) {
       const repo = repoList[i];
       const isLast = i === repoList.length - 1;
-      rows.push(this.subrepoRow(space, repo, depth, isLast, hasParentFolder, t));
+      rows.push(this.subrepoRow(space, repo, depth, isLast, hasParentFolder, activeCwds, t));
     }
 
     return rows;
   }
 
-  subfolderRow(space, dir, depth, t) {
+  subfolderRow(space, dir, depth, activeCwds, t) {
     const isFolded = this.subfoldersFolded.has(`${space.id}:${dir.relPath}`);
     const indent = 20 + depth * 14;
-    const ps = panes();
-    const activeTab = space.tabs?.find((tab) => tab.active);
     const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
-    const isCurrent = ps.some(
-      (p) => p.tab === activeTab?.id && p.cwd && norm(p.cwd) === norm(dir.fullPath)
-    );
+    const isCurrent = activeCwds.has(norm(dir.fullPath));
 
     return h_flex()
       .id(`subfolder-${space.id}-${dir.relPath.replace(/[^a-zA-Z0-9_-]/g, "-")}`)
@@ -551,6 +547,7 @@ export default class Spaces extends View {
       .items_center()
       .rounded(6)
       .cursor_pointer()
+      .tooltip(isFolded ? `Expand ${dir.name}` : `Collapse ${dir.name}`)
       .when(isCurrent, (el) => el.bg(t.raised))
       .when(!isCurrent, (el) => el.hover((s) => s.bg(t.hover)))
       .on_click((_e, cx) => {
@@ -588,28 +585,19 @@ export default class Spaces extends View {
       );
   }
 
-  subrepoRow(space, sub, depth, isLast, hasParentFolder, t) {
-    const ps = panes();
-    const activeTab = space.tabs?.find((tab) => tab.active);
+  subrepoRow(space, sub, depth, isLast, hasParentFolder, activeCwds, t) {
     const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const subNorm = norm(sub.path);
-
-    // Whether any pane in the active tab is open at this subrepo
-    const isCurrent = ps.some(
-      (p) =>
-        p.tab === activeTab?.id &&
-        p.cwd &&
-        norm(p.cwd) === subNorm
-    );
+    const isCurrent = activeCwds.has(subNorm);
 
     const gitKey = JSON.stringify([sub.machine, sub.path]);
     const g = this.git[gitKey];
     const subGit = this.gitSubtitle(g, sub.name, t);
     const height = subGit ? 36 : 26;
-    const indent = (hasParentFolder ? 34 : 22) + depth * 14;
+    const indent = 20 + depth * 14;
 
     return v_flex()
-      .id(`subrepo-${space.id}-${sub.name.replace(/[^a-zA-Z0-9_-]/g, "-")}`)
+      .id(`subrepo-${space.id}-${(sub.relPath || sub.name).replace(/[^a-zA-Z0-9_-]/g, "-")}`)
       .px(8)
       .pl(indent)
       .h(height)
@@ -624,6 +612,7 @@ export default class Spaces extends View {
         if (!space.active) {
           run("space.select", { id: space.id });
         }
+        const ps = panes();
         const spaceTabIds = new Set((space.tabs ?? []).map((tab) => tab.id));
         const existingPane = ps.find(
           (p) =>
@@ -693,8 +682,15 @@ export default class Spaces extends View {
       const subs = this.subrepos[r.w.id] ?? [];
       const isScanning = this.subreposScanning.has(r.w.id);
 
-      const tree = this.buildSubrepoTree(subs, place(r.w, panes()));
-      const subRows = this.renderSubrepoTree(r.w, tree, 0, false, t);
+      const ps = panes();
+      const activeTab = r.w.tabs?.find((tab) => tab.active);
+      const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+      const activeCwds = new Set(
+        ps.filter((p) => p.tab === activeTab?.id && p.cwd).map((p) => norm(p.cwd))
+      );
+
+      const tree = this.buildSubrepoTree(subs, place(r.w, ps));
+      const subRows = this.renderSubrepoTree(r.w, tree, 0, false, activeCwds, t);
       if (isScanning && !subs.length) {
         subRows.push(
           h_flex()
