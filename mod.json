@@ -1,1 +1,10 @@
-{ "place": "none", "title": "Spaces" }
+{
+  "place": "none",
+  "title": "Spaces",
+  "capabilities": {
+    "fs": {
+      "read": ["D:/Projects", "D:\\Projects", "C:/", "D:/"]
+    }
+  }
+}
+

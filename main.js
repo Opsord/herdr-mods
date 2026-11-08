@@ -5,7 +5,7 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout } from "herdr";
+import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, appHome, readTextFile } from "herdr";
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -66,10 +66,100 @@ export default class Spaces extends View {
     for (const state of Object.values(this.reconnecting)) state.busy = false;
     this.folded = new Set(JSON.parse(localStorage.getItem("machines.folded") ?? "[]"));
     this.refreshMachines(cx);
+    this.subrepos = {}; // space.id -> [ { name, path, relative, spaceId, machine } ]
+    this.subreposScanning = new Set();
+    this.subreposChecked = {}; // space.id -> timestamp
+    this.subreposConfig = { max_depth: 2 };
+    this.loadSubreposConfig(cx);
+    this.checkSubrepos(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
     // `git status` walks the whole tree, on another machine a process there:
     // only when its answer could have changed (see `due`).
     cx.timer.every(250, (cx) => this.checkNew(cx));
+  }
+
+  loadSubreposConfig(cx) {
+    cx.spawn(async () => {
+      try {
+        const raw = await readTextFile("subrepos.json");
+        if (raw) {
+          const cfg = JSON.parse(raw);
+          if (typeof cfg.max_depth === "number") this.subreposConfig.max_depth = cfg.max_depth;
+          if (Array.isArray(cfg.exclude)) this.subreposConfig.exclude = cfg.exclude;
+        }
+      } catch {}
+    });
+  }
+
+  checkSubrepos(cx) {
+    const sp = spaces();
+    const active = sp.find((s) => s.active);
+    if (!active) return;
+    const now = Date.now();
+    const lastCheck = this.subreposChecked[active.id] ?? 0;
+    const ps = panes();
+    const currentFolder = place(active, ps);
+    const folderChanged = this.subreposFolder?.[active.id] !== currentFolder;
+    if ((now - lastCheck > 10000 || folderChanged || !(active.id in this.subrepos)) && !this.subreposScanning.has(active.id)) {
+      this.scanSpaceSubrepos(active, cx);
+    }
+  }
+
+  scanSpaceSubrepos(space, cx) {
+    const ps = panes();
+    const folder = place(space, ps);
+    if (!folder) return;
+    this.subreposFolder ??= {};
+    this.subreposFolder[space.id] = folder;
+    this.subreposScanning.add(space.id);
+    this.subreposChecked[space.id] = Date.now();
+
+    cx.spawn(async (cx) => {
+      try {
+        const depth = this.subreposConfig.max_depth ?? 2;
+        const scriptPath = `${appHome().replace(/\\/g, "/")}/mods/project-spaces/scan.ps1`;
+        const r = await exec("powershell", [
+          "-NoProfile",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          scriptPath,
+          "-Path",
+          folder,
+          "-Depth",
+          String(depth),
+        ]);
+
+        if (r.code === 0 && r.stdout) {
+          const lines = r.stdout
+            .split(/\r?\n/)
+            .map((l) => l.trim())
+            .filter(Boolean);
+          const list = lines.map((line) => {
+            const p = line.replace(/\\/g, "/");
+            return {
+              name: base(p),
+              path: p,
+              spaceId: space.id,
+              machine: space.machine ?? null,
+            };
+          });
+
+          this.subrepos[space.id] = list;
+
+          // Request git status for discovered child repos
+          const gitKeys = list.map((item) => JSON.stringify([item.machine, item.path]));
+          if (gitKeys.length) this.refreshGit(gitKeys, cx);
+        } else {
+          this.subrepos[space.id] = [];
+        }
+      } catch {
+        this.subrepos[space.id] = [];
+      } finally {
+        this.subreposScanning.delete(space.id);
+        cx.notify();
+      }
+    });
   }
 
   checkNew(cx) {
@@ -78,6 +168,7 @@ export default class Spaces extends View {
     for (const s of sp) if (!this.shown.has(s.id)) this.born[s.id] ??= now;
     const due = this.due(now, sp, panes());
     if (due.size) this.refreshGit(due, cx);
+    this.checkSubrepos(cx);
     if (sp.some((s) => !this.shown.has(s.id)) || this.orderingDue(now)) cx.notify();
   }
 
@@ -295,10 +386,93 @@ export default class Spaces extends View {
     return out.filter(r => this.shown.has(r.w.id));
   }
 
+  subrepoRow(space, sub, t) {
+    const ps = panes();
+    const activeTab = space.tabs?.find((tab) => tab.active);
+    const subNorm = sub.path.toLowerCase().replace(/\\/g, "/");
+
+    // Whether any pane in the active tab is open at this subrepo
+    const isCurrent = ps.some(
+      (p) =>
+        p.tab === activeTab?.id &&
+        p.cwd &&
+        p.cwd.toLowerCase().replace(/\\/g, "/") === subNorm
+    );
+
+    const gitKey = JSON.stringify([sub.machine, sub.path]);
+    const g = this.git[gitKey];
+
+    return v_flex()
+      .id(`subrepo-${space.id}-${sub.name}`)
+      .px(8)
+      .pl(28)
+      .h(24)
+      .flex_none()
+      .justify_center()
+      .rounded(6)
+      .cursor_pointer()
+      .when(isCurrent, (el) => el.bg(t.raised))
+      .when(!isCurrent, (el) => el.hover((s) => s.bg(t.hover)))
+      .on_click((_e, cx) => {
+        const spaceTabIds = new Set((space.tabs ?? []).map((tab) => tab.id));
+        const existingPane = ps.find(
+          (p) =>
+            spaceTabIds.has(p.tab) &&
+            p.cwd &&
+            p.cwd.toLowerCase().replace(/\\/g, "/") === subNorm
+        );
+
+        if (existingPane) {
+          run("tab.select", { id: existingPane.tab });
+        } else {
+          run("tab.new", { space: space.id, folder: sub.path, name: sub.name });
+        }
+        cx.notify();
+      })
+      .child(
+        h_flex()
+          .gap(7)
+          .items_center()
+          .child(svg("mods/workspace-chrome/folder.svg").size(12).text_color(isCurrent ? t.accent : t.dim))
+          .child(
+            div()
+              .flex_shrink(0)
+              .max_w(130)
+              .truncate()
+              .text_size(11.5)
+              .text_color(isCurrent ? t.foreground : t.muted)
+              .child(sub.name)
+          )
+          .child(g ? this.gitTail(g, false, sub.name, t) : div().flex_1())
+      );
+  }
+
   // The rows, under a header per machine once one isn't this computer.
   grouped(t, collapsed) {
     const rows = this.ordered();
-    const draw = (r) => (collapsed ? this.compact(r, t) : this.row(r, t));
+    const draw = (r) => {
+      if (collapsed) return [this.compact(r, t)];
+      const mainRow = this.row(r, t);
+      if (!r.w.active) return [mainRow];
+
+      const subs = this.subrepos[r.w.id] ?? [];
+      const isScanning = this.subreposScanning.has(r.w.id);
+
+      const subRows = subs.map((sub) => this.subrepoRow(r.w, sub, t));
+      if (isScanning && !subs.length) {
+        subRows.push(
+          h_flex()
+            .id(`scanning-${r.w.id}`)
+            .h(22)
+            .pl(28)
+            .items_center()
+            .text_size(11)
+            .text_color(t.dim)
+            .child("Scanning repos…")
+        );
+      }
+      return [mainRow, ...subRows];
+    };
     const remote = [...new Set([...rows.map(r => r.w.machine).filter(Boolean), ...this.machines.map(m => m.name), ...Object.keys(this.reconnecting)])].sort();
     const loading = m => {
       const layout = machines().find(k => k.name === m)?.layout;
@@ -306,7 +480,7 @@ export default class Spaces extends View {
         || spaces().some(s => (s.machine ?? null) === m && !this.shown.has(s.id));
     };
     const loadingRow = m => div().id(`machine-loading-${m ?? "local"}`).h(28).flex_none().px(8).text_size(12).text_color(t.dim).child(collapsed ? "…" : "Loading…");
-    if (!remote.length) return loading(null) && !rows.length ? [loadingRow(null)] : rows.map(draw);
+    if (!remote.length) return loading(null) && !rows.length ? [loadingRow(null)] : rows.flatMap(draw);
     const machineNames = [null, ...remote];
     return machineNames.flatMap((m) => {
       const mine = rows.filter((r) => (r.w.machine ?? null) === m);
@@ -341,7 +515,7 @@ export default class Spaces extends View {
         .on_click(() => run("space.new", { machine: m ?? "" }))
         .child(svg("mods/workspace-chrome/plus.svg").size(12)).when(!collapsed, el => el.child("New space there"));
       if (!collapsed && rebuilt) return [head];
-      return [head, ...(folded ? [] : mine.length ? mine.map(draw) : [loading(m) ? loadingRow(m) : empty])];
+      return [head, ...(folded ? [] : mine.length ? mine.flatMap(draw) : [loading(m) ? loadingRow(m) : empty])];
     });
   }
 
