@@ -71,6 +71,7 @@ export default class Spaces extends View {
     this.subreposChecked = {}; // space.id -> timestamp
     this.subreposConfig = { max_depth: 2 };
     this.subreposFolded = new Set(JSON.parse(localStorage.getItem("spaces.subrepos_folded") ?? "[]"));
+    this.subfoldersFolded = new Set(JSON.parse(localStorage.getItem("spaces.subfolders_folded") ?? "[]"));
     this.loadSubreposConfig(cx);
     this.checkSubrepos(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
@@ -86,6 +87,17 @@ export default class Spaces extends View {
       this.subreposFolded.add(spaceId);
     }
     localStorage.setItem("spaces.subrepos_folded", JSON.stringify([...this.subreposFolded]));
+    cx.notify();
+  }
+
+  toggleSubfolder(spaceId, relPath, cx) {
+    const key = `${spaceId}:${relPath}`;
+    if (this.subfoldersFolded.has(key)) {
+      this.subfoldersFolded.delete(key);
+    } else {
+      this.subfoldersFolded.add(key);
+    }
+    localStorage.setItem("spaces.subfolders_folded", JSON.stringify([...this.subfoldersFolded]));
     cx.notify();
   }
 
@@ -387,6 +399,23 @@ export default class Spaces extends View {
         spaceId: space.id,
         machine: space.machine ?? null,
         folder: sub.path,
+        isGit: true,
+      },
+    });
+  }
+
+  folderMenu(space, dir) {
+    openOverlay({
+      mod: "subrepo-menu",
+      kind: "popup",
+      width: 220,
+      height: 130,
+      props: {
+        sub: { name: dir.name },
+        spaceId: space.id,
+        machine: space.machine ?? null,
+        folder: dir.fullPath,
+        isGit: false,
       },
     });
   }
@@ -436,7 +465,130 @@ export default class Spaces extends View {
     return out.filter(r => this.shown.has(r.w.id));
   }
 
-  subrepoRow(space, sub, t) {
+  buildSubrepoTree(subs, rootFolder) {
+    const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    const rootNorm = norm(rootFolder);
+
+    const rootNode = {
+      dirs: new Map(),
+      repos: [],
+    };
+
+    for (const sub of subs) {
+      const subNorm = norm(sub.path);
+      let rel = subNorm;
+      if (subNorm.toLowerCase().startsWith(rootNorm.toLowerCase() + "/")) {
+        rel = subNorm.slice(rootNorm.length + 1);
+      }
+      const parts = rel.split("/").filter(Boolean);
+      if (parts.length <= 1) {
+        // Direct child repository of the space
+        rootNode.repos.push({ ...sub, relPath: rel });
+      } else {
+        // Nested inside intermediate directories
+        let current = rootNode;
+        for (let i = 0; i < parts.length - 1; i++) {
+          const dirName = parts[i];
+          if (!current.dirs.has(dirName)) {
+            const dirRelPath = parts.slice(0, i + 1).join("/");
+            const dirFullPath = `${rootNorm}/${dirRelPath}`;
+            current.dirs.set(dirName, {
+              name: dirName,
+              relPath: dirRelPath,
+              fullPath: dirFullPath,
+              dirs: new Map(),
+              repos: [],
+            });
+          }
+          current = current.dirs.get(dirName);
+        }
+        current.repos.push({ ...sub, relPath: rel });
+      }
+    }
+
+    return rootNode;
+  }
+
+  renderSubrepoTree(space, node, depth, hasParentFolder, t) {
+    const rows = [];
+    const dirList = [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
+    const repoList = [...node.repos].sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const dir of dirList) {
+      const isFolded = this.subfoldersFolded.has(`${space.id}:${dir.relPath}`);
+      rows.push(this.subfolderRow(space, dir, depth, t));
+      if (!isFolded) {
+        rows.push(...this.renderSubrepoTree(space, dir, depth + 1, true, t));
+      }
+    }
+
+    for (let i = 0; i < repoList.length; i++) {
+      const repo = repoList[i];
+      const isLast = i === repoList.length - 1;
+      rows.push(this.subrepoRow(space, repo, depth, isLast, hasParentFolder, t));
+    }
+
+    return rows;
+  }
+
+  subfolderRow(space, dir, depth, t) {
+    const isFolded = this.subfoldersFolded.has(`${space.id}:${dir.relPath}`);
+    const indent = 20 + depth * 14;
+    const ps = panes();
+    const activeTab = space.tabs?.find((tab) => tab.active);
+    const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    const isCurrent = ps.some(
+      (p) => p.tab === activeTab?.id && p.cwd && norm(p.cwd) === norm(dir.fullPath)
+    );
+
+    return h_flex()
+      .id(`subfolder-${space.id}-${dir.relPath.replace(/[^a-zA-Z0-9_-]/g, "-")}`)
+      .h(26)
+      .flex_none()
+      .px(8)
+      .pl(indent)
+      .gap(6)
+      .items_center()
+      .rounded(6)
+      .cursor_pointer()
+      .when(isCurrent, (el) => el.bg(t.raised))
+      .when(!isCurrent, (el) => el.hover((s) => s.bg(t.hover)))
+      .on_click((_e, cx) => {
+        cx.stop_propagation();
+        if (!space.active) {
+          run("space.select", { id: space.id });
+        }
+        this.toggleSubfolder(space.id, dir.relPath, cx);
+      })
+      .on_mouse_down("right", (_e, cx) => {
+        cx.stop_propagation();
+        this.folderMenu(space, dir);
+      })
+      .child(
+        svg(`mods/workspace-chrome/chevron-${isFolded ? "right" : "down"}.svg`)
+          .size(11)
+          .flex_none()
+          .text_color(t.dim)
+      )
+      .child(
+        svg("mods/workspace-chrome/folder.svg")
+          .size(12)
+          .flex_none()
+          .text_color(t.dim)
+      )
+      .child(
+        div()
+          .flex_1()
+          .min_w(0)
+          .truncate()
+          .text_size(11.5)
+          .font_medium()
+          .text_color(t.foreground)
+          .child(dir.name)
+      );
+  }
+
+  subrepoRow(space, sub, depth, isLast, hasParentFolder, t) {
     const ps = panes();
     const activeTab = space.tabs?.find((tab) => tab.active);
     const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
@@ -454,11 +606,12 @@ export default class Spaces extends View {
     const g = this.git[gitKey];
     const subGit = this.gitSubtitle(g, sub.name, t);
     const height = subGit ? 36 : 26;
+    const indent = (hasParentFolder ? 34 : 22) + depth * 14;
 
     return v_flex()
-      .id(`subrepo-${space.id}-${sub.name}`)
+      .id(`subrepo-${space.id}-${sub.name.replace(/[^a-zA-Z0-9_-]/g, "-")}`)
       .px(8)
-      .pl(28)
+      .pl(indent)
       .h(height)
       .flex_none()
       .justify_center()
@@ -492,9 +645,22 @@ export default class Spaces extends View {
       })
       .child(
         h_flex()
-          .gap(7)
+          .gap(6)
           .items_center()
-          .child(svg("mods/workspace-chrome/folder.svg").size(12).flex_none().text_color(isCurrent ? t.accent : t.dim))
+          .child(
+            div()
+              .font_family("JetBrains Mono")
+              .text_size(11)
+              .flex_none()
+              .text_color(t.dim)
+              .child(isLast ? "└─" : "├─")
+          )
+          .child(
+            svg("mods/workspace-chrome/folder.svg")
+              .size(12)
+              .flex_none()
+              .text_color(isCurrent ? t.accent : t.dim)
+          )
           .child(
             v_flex()
               .flex_1()
@@ -527,7 +693,8 @@ export default class Spaces extends View {
       const subs = this.subrepos[r.w.id] ?? [];
       const isScanning = this.subreposScanning.has(r.w.id);
 
-      const subRows = subs.map((sub) => this.subrepoRow(r.w, sub, t));
+      const tree = this.buildSubrepoTree(subs, place(r.w, panes()));
+      const subRows = this.renderSubrepoTree(r.w, tree, 0, false, t);
       if (isScanning && !subs.length) {
         subRows.push(
           h_flex()

@@ -10,12 +10,17 @@ export default class SubrepoMenu extends View {
   }
 
   items() {
-    return [
-      {
+    const p = props() ?? {};
+    const isGit = p.isGit !== false;
+    const items = [];
+    if (isGit) {
+      items.push({
         label: "Switch branch…",
         icon: "mods/workspace-chrome/git-branch.svg",
         action: "branch-switch",
-      },
+      });
+    }
+    items.push(
       {
         label: "Open in new tab",
         icon: "mods/workspace-chrome/plus.svg",
@@ -30,8 +35,9 @@ export default class SubrepoMenu extends View {
         label: "Copy path",
         icon: "mods/workspace-chrome/folder.svg",
         action: "copy",
-      },
-    ];
+      }
+    );
+    return items;
   }
 
   choose(i, cx) {
@@ -99,7 +105,7 @@ export default class SubrepoMenu extends View {
           .text_size(11)
           .text_color(t.dim)
           .child(svg("mods/workspace-chrome/folder.svg").size(11).text_color(t.dim))
-          .child(div().truncate().child(p.sub?.name ?? "Sub-repository"))
+          .child(div().truncate().child(p.sub?.name ?? (p.isGit === false ? "Folder" : "Sub-repository")))
       )
       .child(div().mx(4).my(2).h(1).bg(t.border))
       .children(
