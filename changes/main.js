@@ -30,9 +30,21 @@ function diffRows(lines) {
 
 export default class Changes extends View {
   init(_props, cx) {
-    this.files = []; this.rows = []; this.diffWidth = 0; this.message = ""; this.handle = cx.focus_handle();
-    this.treeView = JSON.parse(localStorage.getItem("changes.tree_view") ?? "true");
-    this.foldedFolders = new Set(JSON.parse(localStorage.getItem("changes.folded_folders") ?? "[]"));
+    this.files = []; this.rows = []; this.diffWidth = 0; this.message = ""; this.open = null; this.handle = cx.focus_handle();
+    let treeView = true;
+    try {
+      const stored = localStorage.getItem("changes.tree_view");
+      if (stored !== null) treeView = JSON.parse(stored);
+    } catch { treeView = true; }
+    this.treeView = treeView;
+
+    let folded = [];
+    try {
+      const stored = localStorage.getItem("changes.folded_folders");
+      if (stored !== null) folded = JSON.parse(stored);
+    } catch { folded = []; }
+    this.foldedFolders = new Set(Array.isArray(folded) ? folded : []);
+
     this.input = InputState.new({ placeholder: "Commit message" });
     this.input.on("change", (_e, cx) => {
       const hadMessage = Boolean(this.message.trim());
@@ -97,7 +109,8 @@ export default class Changes extends View {
   buildChangesTree(files) {
     const root = { dirs: new Map(), files: [] };
     for (const f of files) {
-      const parts = f.path.split("/");
+      const cleanPath = (f.path || "").replace(/\\/g, "/");
+      const parts = cleanPath.split("/");
       if (parts.length <= 1) {
         root.files.push(f);
       } else {
@@ -270,7 +283,7 @@ export default class Changes extends View {
     const { cwd, on } = location(), context = key();
     if (context !== this.context) {
       this.context = context; this.root = null; this.files = []; this.open = null;
-      this.setLines([]); this.message = ""; this.input.set_value(""); this.error = null; this.note = null; this.watched = null; this.closed = false; this.limited = false;
+      this.setLines([]); this.message = ""; this.input.set_value(""); this.error = null; this.note = null; this.watched = null; this.limited = false;
     }
     if (!cwd) return;
     this.loading = true;
@@ -307,8 +320,6 @@ export default class Changes extends View {
         this.root = root; this.on = on; this.hasHead = head.code === 0; this.files = files; this.limited = entries.length > 1000; this.error = null;
         this.watch(root, cx);
         if (this.open && !files.some((f) => f.path === this.open)) { this.open = null; this.setLines([]); }
-        // The first file's diff shows until you pick another.
-        if (!this.open && !this.closed && files.length) this.open = files[0].path;
         if (this.open) {
           try { await this.load(this.open, context); }
           catch { if (key() === context) this.setLines(["Cannot preview this diff (too large or unreadable)"]); }
@@ -346,7 +357,6 @@ export default class Changes extends View {
 
   pick(path, cx) {
     this.open = this.open === path ? null : path; this.setLines([]); this.note = null;
-    this.closed = !this.open;
     const context = this.context;
     if (this.open) cx.spawn(async (cx) => {
       try { await this.load(path, context); }
@@ -407,7 +417,19 @@ export default class Changes extends View {
 
     return v_flex().id("changes").size_full().min_h(0).rounded(10).overflow_hidden().bg(t.background).border_1().border_color(t.border).text_color(t.foreground).text_size(13).track_focus(this.handle)
       .on_key_down((e, cx) => {
-        if (e.key === "escape" && this.typing) { this.typing = false; this.handle.focus(); cx.stop_propagation(); cx.notify(); }
+        if (e.key === "escape") {
+          if (this.typing) {
+            this.typing = false;
+            this.handle.focus();
+            cx.stop_propagation();
+            cx.notify();
+          } else if (this.open) {
+            this.open = null;
+            this.setLines([]);
+            cx.stop_propagation();
+            cx.notify();
+          }
+        }
       })
       .child(
         v_flex()
@@ -436,7 +458,7 @@ export default class Changes extends View {
                       .border_color(t.border)
                       .text_size(10)
                       .text_color(t.muted)
-                      .child(`${this.files.length} files`)
+                      .child(`${this.files.length} ${this.files.length === 1 ? "file" : "files"}`)
                   )
               )
               .child(
@@ -566,7 +588,28 @@ export default class Changes extends View {
           .child(div().w_full().min_w(this.diffWidth).h_full().child(v_virtual_list("changes-diff", this.rows.length, 20, (i) => String(i),
             (range) => this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t))).size_full())))
         .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
-        .when(!this.open && this.files.length > 0, (e) => e.child(div().absolute().top(6).px(12).text_color(t.dim).child("Select a file to view its changes"))))
+        .when(!this.open && this.files.length > 0, (e) =>
+          e.child(
+            h_flex()
+              .absolute()
+              .inset_0()
+              .items_center()
+              .justify_center()
+              .gap(6)
+              .child(
+                svg("mods/workspace-chrome/folder.svg")
+                  .size(13)
+                  .flex_none()
+                  .text_color(t.dim)
+              )
+              .child(
+                div()
+                  .text_color(t.dim)
+                  .text_size(11.5)
+                  .child("Select a file to view its changes")
+              )
+          )
+        ))
       .when(Boolean(this.note), (e) => e.child(div().px(10).pb(8).text_size(11).text_color(t.ansi1).child(this.note)))
       .child(h_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
         .child(div().id("commit-message").flex_1().min_w(0).h(32).px(10).flex().items_center().rounded(8).border_1().border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)))
