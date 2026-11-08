@@ -70,12 +70,23 @@ export default class Spaces extends View {
     this.subreposScanning = new Set();
     this.subreposChecked = {}; // space.id -> timestamp
     this.subreposConfig = { max_depth: 2 };
+    this.subreposFolded = new Set(JSON.parse(localStorage.getItem("spaces.subrepos_folded") ?? "[]"));
     this.loadSubreposConfig(cx);
     this.checkSubrepos(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
     // `git status` walks the whole tree, on another machine a process there:
     // only when its answer could have changed (see `due`).
     cx.timer.every(250, (cx) => this.checkNew(cx));
+  }
+
+  toggleSubrepos(spaceId, cx) {
+    if (this.subreposFolded.has(spaceId)) {
+      this.subreposFolded.delete(spaceId);
+    } else {
+      this.subreposFolded.add(spaceId);
+    }
+    localStorage.setItem("spaces.subrepos_folded", JSON.stringify([...this.subreposFolded]));
+    cx.notify();
   }
 
   loadSubreposConfig(cx) {
@@ -93,15 +104,15 @@ export default class Spaces extends View {
 
   checkSubrepos(cx) {
     const sp = spaces();
-    const active = sp.find((s) => s.active);
-    if (!active) return;
     const now = Date.now();
-    const lastCheck = this.subreposChecked[active.id] ?? 0;
     const ps = panes();
-    const currentFolder = place(active, ps);
-    const folderChanged = this.subreposFolder?.[active.id] !== currentFolder;
-    if ((now - lastCheck > 10000 || folderChanged || !(active.id in this.subrepos)) && !this.subreposScanning.has(active.id)) {
-      this.scanSpaceSubrepos(active, cx);
+    for (const space of sp) {
+      const lastCheck = this.subreposChecked[space.id] ?? 0;
+      const currentFolder = place(space, ps);
+      const folderChanged = this.subreposFolder?.[space.id] !== currentFolder;
+      if ((now - lastCheck > 15000 || folderChanged || !(space.id in this.subrepos)) && !this.subreposScanning.has(space.id)) {
+        this.scanSpaceSubrepos(space, cx);
+      }
     }
   }
 
@@ -401,12 +412,14 @@ export default class Spaces extends View {
 
     const gitKey = JSON.stringify([sub.machine, sub.path]);
     const g = this.git[gitKey];
+    const subGit = this.gitSubtitle(g, sub.name, t);
+    const height = subGit ? 36 : 26;
 
     return v_flex()
       .id(`subrepo-${space.id}-${sub.name}`)
       .px(8)
       .pl(28)
-      .h(24)
+      .h(height)
       .flex_none()
       .justify_center()
       .rounded(6)
@@ -433,17 +446,23 @@ export default class Spaces extends View {
         h_flex()
           .gap(7)
           .items_center()
-          .child(svg("mods/workspace-chrome/folder.svg").size(12).text_color(isCurrent ? t.accent : t.dim))
+          .child(svg("mods/workspace-chrome/folder.svg").size(12).flex_none().text_color(isCurrent ? t.accent : t.dim))
           .child(
-            div()
-              .flex_shrink(0)
-              .max_w(130)
-              .truncate()
-              .text_size(11.5)
-              .text_color(isCurrent ? t.foreground : t.muted)
-              .child(sub.name)
+            v_flex()
+              .flex_1()
+              .min_w(0)
+              .justify_center()
+              .gap(1)
+              .child(
+                div()
+                  .min_w(0)
+                  .truncate()
+                  .text_size(11.5)
+                  .text_color(isCurrent ? t.foreground : t.muted)
+                  .child(sub.name)
+              )
+              .when(Boolean(subGit), (el) => el.child(subGit))
           )
-          .child(g ? this.gitTail(g, false, sub.name, t) : div().flex_1())
       );
   }
 
@@ -453,7 +472,9 @@ export default class Spaces extends View {
     const draw = (r) => {
       if (collapsed) return [this.compact(r, t)];
       const mainRow = this.row(r, t);
-      if (!r.w.active) return [mainRow];
+
+      const isFolded = this.subreposFolded.has(r.w.id);
+      if (isFolded) return [mainRow];
 
       const subs = this.subrepos[r.w.id] ?? [];
       const isScanning = this.subreposScanning.has(r.w.id);
@@ -519,6 +540,23 @@ export default class Spaces extends View {
     });
   }
 
+  gitSubtitle(g, name, t) {
+    if (!g || !g.branch) return null;
+    const same = (a) => (name ?? "").toLowerCase() === (g.name ?? "").toLowerCase();
+    const repo = same(name) ? "" : g.name;
+    const branch = g.branch;
+    const label = [repo, branch].filter(Boolean).join(" \u00b7 ");
+    return h_flex()
+      .gap(4)
+      .items_center()
+      .text_size(10.5)
+      .text_color(t.dim)
+      .child(svg("mods/workspace-chrome/git-branch.svg").size(10).flex_none().text_color(t.dim))
+      .child(div().min_w(0).truncate().child(label))
+      .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(t.ansi2).child(`\u2191${g.ahead}`)))
+      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
+  }
+
   // Only what's unusual, after the name: "herdr \u00b7 spike \u21912 \u21931". The repo or
   // branch goes when the name already says it (a worktree is named after its branch),
   // and master/main go: nearly every space is on one.
@@ -547,11 +585,19 @@ export default class Spaces extends View {
     const colors = shared("space.colors") ?? {};
     const color = colors[w.id] ?? "ansi6";
     const fill = color.startsWith("#") ? color : (MARK[color] ?? t[color]);
+
+    const subs = this.subrepos[w.id] ?? [];
+    const isScanning = this.subreposScanning.has(w.id);
+    const hasSubs = subs.length > 0 || isScanning;
+    const isFolded = this.subreposFolded.has(w.id);
+    const subGit = this.gitSubtitle(g, w.name, t);
+    const height = subGit ? 38 : (tree ? 28 : 30);
+
     return v_flex()
       .relative()
       .id(`space-${w.id}`)
       .px(8)
-      .h(rowHeight({ tree }))
+      .h(height)
       .flex_none()
       .justify_center()
       .rounded(8)
@@ -589,12 +635,37 @@ export default class Spaces extends View {
       .on_mouse_down("right", () => this.menu(w))
       .child(
         h_flex()
-          .gap(9)
+          .gap(8)
           .items_center()
           .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
           .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?")))
-          .child(div().flex_shrink(0).max_w(150).truncate().text_color(t.foreground).child(w.name))
-          .child(g ? this.gitTail(g, tree, w.name, t) : div().flex_1()),
+          .child(
+            v_flex()
+              .flex_1()
+              .min_w(0)
+              .justify_center()
+              .gap(1)
+              .child(div().min_w(0).truncate().text_size(12).text_color(t.foreground).child(w.name))
+              .when(Boolean(subGit), el => el.child(subGit))
+          )
+          .when(hasSubs, el => el.child(
+            h_flex()
+              .id(`fold-btn-${w.id}`)
+              .size(20)
+              .flex_none()
+              .items_center()
+              .justify_center()
+              .rounded(4)
+              .hover(s => s.bg(t.hover))
+              .cursor_pointer()
+              .tooltip(isFolded ? "Expand sub-repositories" : "Collapse sub-repositories")
+              .on_mouse_down("left", (_e, cx) => cx.stop_propagation())
+              .on_click((_e, cx) => {
+                cx.stop_propagation();
+                this.toggleSubrepos(w.id, cx);
+              })
+              .child(svg(`mods/workspace-chrome/chevron-${isFolded ? "right" : "down"}.svg`).size(12).text_color(t.dim))
+          ))
       );
   }
 
