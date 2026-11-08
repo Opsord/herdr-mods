@@ -62,6 +62,38 @@ export default class Changes extends View {
     cx.notify();
   }
 
+  getAllDirPaths(node, paths = []) {
+    for (const dir of node.dirs.values()) {
+      paths.push(dir.path);
+      this.getAllDirPaths(dir, paths);
+    }
+    return paths;
+  }
+
+  collapseAll(cx) {
+    if (!this.treeView) {
+      this.treeView = true;
+      localStorage.setItem("changes.tree_view", "true");
+    }
+    const tree = this.buildChangesTree(this.files);
+    const allPaths = this.getAllDirPaths(tree);
+    for (const p of allPaths) {
+      this.foldedFolders.add(p);
+    }
+    localStorage.setItem("changes.folded_folders", JSON.stringify([...this.foldedFolders]));
+    cx.notify();
+  }
+
+  expandAll(cx) {
+    if (!this.treeView) {
+      this.treeView = true;
+      localStorage.setItem("changes.tree_view", "true");
+    }
+    this.foldedFolders.clear();
+    localStorage.setItem("changes.folded_folders", "[]");
+    cx.notify();
+  }
+
   buildChangesTree(files) {
     const root = { dirs: new Map(), files: [] };
     for (const f of files) {
@@ -419,6 +451,63 @@ export default class Changes extends View {
                 .font_medium()
                 .text_color(this.treeView ? t.foreground : t.muted)
                 .child("Tree")
+            )
+        )
+        .when(this.treeView, (el) =>
+          el
+            .child(
+              h_flex()
+                .id("changes-collapse-all")
+                .h(22)
+                .px(6)
+                .gap(4)
+                .items_center()
+                .rounded(5)
+                .border_1()
+                .border_color(t.border)
+                .cursor_pointer()
+                .hover((s) => s.bg(t.hover).border_color(t.dim))
+                .tooltip("Collapse all folders")
+                .on_click((_e, cx) => this.collapseAll(cx))
+                .child(
+                  svg("mods/workspace-chrome/chevron-right.svg")
+                    .size(11)
+                    .flex_none()
+                    .text_color(t.muted)
+                )
+                .child(
+                  div()
+                    .text_size(10.5)
+                    .text_color(t.muted)
+                    .child("Collapse")
+                )
+            )
+            .child(
+              h_flex()
+                .id("changes-expand-all")
+                .h(22)
+                .px(6)
+                .gap(4)
+                .items_center()
+                .rounded(5)
+                .border_1()
+                .border_color(t.border)
+                .cursor_pointer()
+                .hover((s) => s.bg(t.hover).border_color(t.dim))
+                .tooltip("Expand all folders")
+                .on_click((_e, cx) => this.expandAll(cx))
+                .child(
+                  svg("mods/workspace-chrome/chevron-down.svg")
+                    .size(11)
+                    .flex_none()
+                    .text_color(t.muted)
+                )
+                .child(
+                  div()
+                    .text_size(10.5)
+                    .text_color(t.muted)
+                    .child("Expand")
+                )
             )
         )
         .child(div().flex_1())
