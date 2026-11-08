@@ -578,38 +578,90 @@ export default class Changes extends View {
           )
       )
       // overflow_y_scrollbar() wraps the list, so its flex sizing never reached the panel's layout.
-      .child(div().flex_1().min_h(44).max_h(rowCount * 28 + 12).relative().border_b(1).border_color(t.border)
-        .child(v_flex().id("changes-list").absolute().inset_0().overflow_y_scroll().p(6).children(fileRows)
-          .when(!this.files.length, (e) => e.child(div().p(8).text_color(t.dim).child(this.error || (this.loading ? "Loading changes…" : this.root ? "No uncommitted changes" : "No folder")))))
-        .child(Scrollbar.vertical("changes-list").absolute().inset_0()))
-      .when(this.limited, el => el.child(div().px(12).py(4).text_size(11).text_color(t.dim).child("Showing the first 1,000 changed files")))
-      .child(div().flex_1().min_h(0).relative().font_family(settings().font_family ?? "JetBrains Mono").text_size(11)
-        .child(div().id("changes-diff-x").size_full().overflow_x_scrollbar()
-          .child(div().w_full().min_w(this.diffWidth).h_full().child(v_virtual_list("changes-diff", this.rows.length, 20, (i) => String(i),
-            (range) => this.rows.slice(range.start, range.end).map((row) => this.diffRow(row, t))).size_full())))
-        .child(Scrollbar.vertical("changes-diff").viewport_from_layout().absolute().inset_0())
-        .when(!this.open && this.files.length > 0, (e) =>
-          e.child(
-            h_flex()
+      .child(
+        div()
+          .flex_1()
+          .min_h(44)
+          .when(Boolean(this.open), (el) =>
+            el.max_h(rowCount * 28 + 12).border_b(1).border_color(t.border)
+          )
+          .relative()
+          .child(
+            v_flex()
+              .id("changes-list")
               .absolute()
               .inset_0()
-              .items_center()
-              .justify_center()
-              .gap(6)
-              .child(
-                svg("mods/workspace-chrome/folder.svg")
-                  .size(13)
-                  .flex_none()
-                  .text_color(t.dim)
-              )
-              .child(
-                div()
-                  .text_color(t.dim)
-                  .text_size(11.5)
-                  .child("Select a file to view its changes")
+              .overflow_y_scroll()
+              .p(6)
+              .children(fileRows)
+              .when(!this.files.length, (e) =>
+                e.child(
+                  div()
+                    .p(8)
+                    .text_color(t.dim)
+                    .child(
+                      this.error ||
+                        (this.loading
+                          ? "Loading changes…"
+                          : this.root
+                          ? "No uncommitted changes"
+                          : "No folder")
+                    )
+                )
               )
           )
-        ))
+          .child(Scrollbar.vertical("changes-list").absolute().inset_0())
+      )
+      .when(this.limited, (el) =>
+        el.child(
+          div()
+            .px(12)
+            .py(4)
+            .text_size(11)
+            .text_color(t.dim)
+            .child("Showing the first 1,000 changed files")
+        )
+      )
+      .when(Boolean(this.open), (el) =>
+        el.child(
+          div()
+            .flex_1()
+            .min_h(0)
+            .relative()
+            .font_family(settings().font_family ?? "JetBrains Mono")
+            .text_size(11)
+            .child(
+              div()
+                .id("changes-diff-x")
+                .size_full()
+                .overflow_x_scrollbar()
+                .child(
+                  div()
+                    .w_full()
+                    .min_w(this.diffWidth)
+                    .h_full()
+                    .child(
+                      v_virtual_list(
+                        "changes-diff",
+                        this.rows.length,
+                        20,
+                        (i) => String(i),
+                        (range) =>
+                          this.rows
+                            .slice(range.start, range.end)
+                            .map((row) => this.diffRow(row, t))
+                      ).size_full()
+                    )
+                )
+            )
+            .child(
+              Scrollbar.vertical("changes-diff")
+                .viewport_from_layout()
+                .absolute()
+                .inset_0()
+            )
+        )
+      )
       .when(Boolean(this.note), (e) => e.child(div().px(10).pb(8).text_size(11).text_color(t.ansi1).child(this.note)))
       .child(h_flex().flex_none().p(10).gap(8).border_t(1).border_color(t.border)
         .child(div().id("commit-message").flex_1().min_w(0).h(32).px(10).flex().items_center().rounded(8).border_1().border_color(this.typing ? t.accent : t.border).cursor_text().on_mouse_down("left", (_e, cx) => cx.stop_propagation()).child(Input.new(this.input).h_full().text_size(12).text_color(t.foreground)))
