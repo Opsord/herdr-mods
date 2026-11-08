@@ -110,7 +110,8 @@ export default class Spaces extends View {
       const lastCheck = this.subreposChecked[space.id] ?? 0;
       const currentFolder = place(space, ps);
       const folderChanged = this.subreposFolder?.[space.id] !== currentFolder;
-      if ((now - lastCheck > 15000 || folderChanged || !(space.id in this.subrepos)) && !this.subreposScanning.has(space.id)) {
+      const interval = space.active ? 20000 : 60000;
+      if ((now - lastCheck > interval || folderChanged || !(space.id in this.subrepos)) && !this.subreposScanning.has(space.id)) {
         this.scanSpaceSubrepos(space, cx);
       }
     }
@@ -119,7 +120,11 @@ export default class Spaces extends View {
   scanSpaceSubrepos(space, cx) {
     const ps = panes();
     const folder = place(space, ps);
-    if (!folder) return;
+    if (!folder) {
+      this.subrepos[space.id] = [];
+      this.subreposChecked[space.id] = Date.now();
+      return;
+    }
     this.subreposFolder ??= {};
     this.subreposFolder[space.id] = folder;
     this.subreposScanning.add(space.id);
@@ -128,42 +133,61 @@ export default class Spaces extends View {
     cx.spawn(async (cx) => {
       try {
         const depth = this.subreposConfig.max_depth ?? 2;
-        const scriptPath = `${appHome().replace(/\\/g, "/")}/mods/project-spaces/scan.ps1`;
-        const r = await exec("powershell", [
-          "-NoProfile",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-File",
-          scriptPath,
-          "-Path",
-          folder,
-          "-Depth",
-          String(depth),
-        ]);
+        const exclusions = (this.subreposConfig.exclude ?? [
+          "node_modules", "dist", "target", ".venv", "vendor", ".cache", "build", ".next", ".git"
+        ]).join(",");
 
-        if (r.code === 0 && r.stdout) {
-          const lines = r.stdout
-            .split(/\r?\n/)
-            .map((l) => l.trim())
-            .filter(Boolean);
-          const list = lines.map((line) => {
-            const p = line.replace(/\\/g, "/");
-            return {
-              name: base(p),
-              path: p,
-              spaceId: space.id,
-              machine: space.machine ?? null,
-            };
-          });
-
-          this.subrepos[space.id] = list;
-
-          // Request git status for discovered child repos
-          const gitKeys = list.map((item) => JSON.stringify([item.machine, item.path]));
-          if (gitKeys.length) this.refreshGit(gitKeys, cx);
+        let list = [];
+        if (space.machine) {
+          // Remote machine: use find
+          const r = await exec("sh", ["-c", `find . -maxdepth ${depth + 1} -name .git -print`], { cwd: folder, on: space.machine });
+          if (r.code === 0 && r.stdout) {
+            const rawLines = r.stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            list = rawLines.map(line => {
+              const cleaned = line.replace(/\/\.git$/, "").replace(/^\.\//, "");
+              const full = cleaned ? `${folder}/${cleaned}` : folder;
+              return { name: base(full), path: full.replace(/\\/g, "/"), spaceId: space.id, machine: space.machine };
+            }).filter(item => item.path !== folder.replace(/\\/g, "/"));
+          }
         } else {
-          this.subrepos[space.id] = [];
+          // Local Windows machine: use fast scan.ps1
+          const scriptPath = `${appHome().replace(/\\/g, "/")}/mods/project-spaces/scan.ps1`;
+          const r = await exec("powershell", [
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            scriptPath,
+            "-Path",
+            folder,
+            "-Depth",
+            String(depth),
+            "-Exclude",
+            exclusions,
+          ]);
+
+          if (r.code === 0 && r.stdout) {
+            const lines = r.stdout
+              .split(/\r?\n/)
+              .map((l) => l.trim())
+              .filter(Boolean);
+            list = lines.map((line) => {
+              const p = line.replace(/\\/g, "/");
+              return {
+                name: base(p),
+                path: p,
+                spaceId: space.id,
+                machine: null,
+              };
+            });
+          }
         }
+
+        this.subrepos[space.id] = list;
+
+        // Request git status for discovered child repos
+        const gitKeys = list.map((item) => JSON.stringify([item.machine, item.path]));
+        if (gitKeys.length) this.refreshGit(gitKeys, cx);
       } catch {
         this.subrepos[space.id] = [];
       } finally {
@@ -400,14 +424,15 @@ export default class Spaces extends View {
   subrepoRow(space, sub, t) {
     const ps = panes();
     const activeTab = space.tabs?.find((tab) => tab.active);
-    const subNorm = sub.path.toLowerCase().replace(/\\/g, "/");
+    const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    const subNorm = norm(sub.path);
 
     // Whether any pane in the active tab is open at this subrepo
     const isCurrent = ps.some(
       (p) =>
         p.tab === activeTab?.id &&
         p.cwd &&
-        p.cwd.toLowerCase().replace(/\\/g, "/") === subNorm
+        norm(p.cwd) === subNorm
     );
 
     const gitKey = JSON.stringify([sub.machine, sub.path]);
@@ -427,12 +452,16 @@ export default class Spaces extends View {
       .when(isCurrent, (el) => el.bg(t.raised))
       .when(!isCurrent, (el) => el.hover((s) => s.bg(t.hover)))
       .on_click((_e, cx) => {
+        // If clicking a subrepo of a space that is not active, select the space first
+        if (!space.active) {
+          run("space.select", { id: space.id });
+        }
         const spaceTabIds = new Set((space.tabs ?? []).map((tab) => tab.id));
         const existingPane = ps.find(
           (p) =>
             spaceTabIds.has(p.tab) &&
             p.cwd &&
-            p.cwd.toLowerCase().replace(/\\/g, "/") === subNorm
+            norm(p.cwd) === subNorm
         );
 
         if (existingPane) {
