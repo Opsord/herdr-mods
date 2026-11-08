@@ -12,22 +12,22 @@ export default class SubrepoMenu extends View {
   items() {
     return [
       {
-        label: "Cambiar de rama...",
+        label: "Switch branch…",
         icon: "mods/workspace-chrome/git-branch.svg",
         action: "branch-switch",
       },
       {
-        label: "Abrir en nueva pestaña",
+        label: "Open in new tab",
         icon: "mods/workspace-chrome/plus.svg",
         action: "tab.new",
       },
       {
-        label: "Dividir a la derecha",
+        label: "Split right",
         icon: "mods/workspace-chrome/panel-right.svg",
         action: "pane.split",
       },
       {
-        label: "Copiar ruta",
+        label: "Copy path",
         icon: "mods/workspace-chrome/folder.svg",
         action: "copy",
       },
@@ -63,7 +63,7 @@ export default class SubrepoMenu extends View {
     } else if (it.action === "copy") {
       if (p.folder) {
         cx.write_to_clipboard(p.folder);
-        notify({ body: `Ruta copiada: ${p.folder}`, timeout: 2000 });
+        notify({ body: `Path copied: ${p.folder}`, timeout: 2000 });
       }
     }
   }
@@ -99,7 +99,7 @@ export default class SubrepoMenu extends View {
           .text_size(11)
           .text_color(t.dim)
           .child(svg("mods/workspace-chrome/folder.svg").size(11).text_color(t.dim))
-          .child(div().truncate().child(p.sub?.name ?? "Subrepositorio"))
+          .child(div().truncate().child(p.sub?.name ?? "Sub-repository"))
       )
       .child(div().mx(4).my(2).h(1).bg(t.border))
       .children(

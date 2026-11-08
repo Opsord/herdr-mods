@@ -14,7 +14,7 @@ export default class BranchSwitcher extends View {
 
     this.input = InputState.new({
       value: "",
-      placeholder: "Buscar rama local o remota...",
+      placeholder: "Search local or remote branch…",
     });
     this.inputFocused = true;
     this.input.on("change", () => {
@@ -43,11 +43,11 @@ export default class BranchSwitcher extends View {
     const p = props() ?? {};
     if (p.folder) {
       cx.spawn(async (cx) => {
-        // 1. Cargar ramas existentes al instante
+        // 1. Load existing branches immediately
         await this.loadBranches(p.folder, p.machine);
         cx.notify();
 
-        // 2. Comprobar si hay remotes antes de hacer fetch
+        // 2. Check if remotes exist before fetching
         try {
           const remotesCheck = await exec("git", ["remote"], {
             cwd: p.folder,
@@ -99,7 +99,7 @@ export default class BranchSwitcher extends View {
         const [fullRef, shortRef, head] = line.split("\t");
         if (!fullRef) continue;
 
-        // Omitir referencias simbólicas de remotos como origin/HEAD
+        // Skip symbolic remote references like origin/HEAD
         if (
           fullRef.startsWith("refs/remotes/") &&
           (shortRef.endsWith("/HEAD") || !shortRef.includes("/"))
@@ -125,7 +125,7 @@ export default class BranchSwitcher extends View {
             isCurrent: isHead,
           });
         } else if (isRemote) {
-          // Extraer nombre simple de la rama remota (después de refs/remotes/<remote>/)
+          // Extract simple branch name from remote ref (after refs/remotes/<remote>/)
           const remotePath = fullRef.slice("refs/remotes/".length);
           const slashIdx = remotePath.indexOf("/");
           const remoteName = slashIdx !== -1 ? remotePath.slice(0, slashIdx) : "";
@@ -143,7 +143,7 @@ export default class BranchSwitcher extends View {
         }
       }
 
-      // Si no se encontró rama actual (HEAD detached), buscar commit corto
+      // If no current branch found (detached HEAD), get short commit hash
       if (!foundHead) {
         const headCheck = await exec(
           "git",
@@ -155,7 +155,7 @@ export default class BranchSwitcher extends View {
         }
       }
 
-      // Priorizar: ramas locales primero, luego ramas remotas no existentes localmente
+      // Prioritize: local branches first, then remote branches not existing locally
       const localNames = new Set(locals.map((b) => b.simpleName));
       const filteredRemotes = remotes.filter(
         (b) => !localNames.has(b.simpleName)
@@ -213,7 +213,7 @@ export default class BranchSwitcher extends View {
       if (r.code === 0) {
         closeOverlay(p.overlay);
       } else {
-        this.error = (r.stderr || r.stdout || "Error al cambiar de rama").trim();
+        this.error = (r.stderr || r.stdout || "Failed to switch branch").trim();
         cx.notify();
       }
     } catch (e) {
@@ -278,7 +278,7 @@ export default class BranchSwitcher extends View {
                     div()
                       .font_semibold()
                       .text_color(t.foreground)
-                      .child(`Cambiar de rama: ${p.sub?.name ?? "Repositorio"}`)
+                      .child(`Switch branch: ${p.sub?.name ?? "Repository"}`)
                   )
                   .child(
                     div()
@@ -286,8 +286,8 @@ export default class BranchSwitcher extends View {
                       .text_color(t.dim)
                       .child(
                         this.currentBranch
-                          ? `Rama actual: ${this.currentBranch}`
-                          : "Leyendo ramas..."
+                          ? `Current branch: ${this.currentBranch}`
+                          : "Loading branches…"
                       )
                   )
               )
@@ -308,7 +308,7 @@ export default class BranchSwitcher extends View {
                     div()
                       .text_size(11)
                       .text_color(t.dim)
-                      .child("Actualizando remotas…")
+                      .child("Fetching remotes…")
                   )
               )
               .child(
@@ -401,7 +401,7 @@ export default class BranchSwitcher extends View {
                           .bg(t.raised)
                           .text_size(10.5)
                           .text_color(t.accent)
-                          .child("actual")
+                          .child("current")
                       )
                     )
                     .when(!b.isCurrent && b.isRemote, (el) =>
@@ -414,7 +414,7 @@ export default class BranchSwitcher extends View {
                           .bg(t.surface)
                           .text_size(10.5)
                           .text_color(t.dim)
-                          .child("remota")
+                          .child("remote")
                       )
                     );
                 })
@@ -427,8 +427,8 @@ export default class BranchSwitcher extends View {
                     .text_color(t.dim)
                     .child(
                       this.fetching
-                        ? "Buscando ramas..."
-                        : "No se encontraron ramas que coincidan."
+                        ? "Loading branches…"
+                        : "No matching branches found."
                     )
                 )
               )
@@ -444,11 +444,11 @@ export default class BranchSwitcher extends View {
           .child(
             div().child(
               this.busy
-                ? "Cambiando de rama..."
-                : `${rows.length} ramas disponibles`
+                ? "Switching branch…"
+                : `${rows.length} ${rows.length === 1 ? "branch" : "branches"} available`
             )
           )
-          .child(div().child("↑↓ elegir · ↵ cambiar · esc cancelar"))
+          .child(div().child("↑↓ choose · ↵ switch · esc cancel"))
       );
   }
 }
