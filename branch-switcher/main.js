@@ -23,7 +23,10 @@ export default class BranchSwitcher extends View {
       this.error = "";
       cx.notify();
     });
-    this.input.on("submit", (_e, cx) => this.checkout(this.shown()[this.at], cx));
+    this.input.on("submit", (_e, cx) => {
+      const list = this.shown();
+      if (list[this.at]) this.checkout(list[this.at], cx);
+    });
     this.input.on("focus", () => {
       this.inputFocused = true;
       cx.notify();
@@ -44,15 +47,25 @@ export default class BranchSwitcher extends View {
         await this.loadBranches(p.folder, p.machine);
         cx.notify();
 
-        // 2. Fetch de ramas remotas en segundo plano
-        this.fetching = true;
-        cx.notify();
+        // 2. Comprobar si hay remotes antes de hacer fetch
         try {
-          await exec("git", ["fetch", "--prune", "--no-tags"], {
+          const remotesCheck = await exec("git", ["remote"], {
             cwd: p.folder,
             on: p.machine,
           });
-          await this.loadBranches(p.folder, p.machine);
+          const hasRemotes =
+            remotesCheck.code === 0 && remotesCheck.stdout.trim().length > 0;
+
+          if (hasRemotes) {
+            this.fetching = true;
+            cx.notify();
+
+            await exec("git", ["fetch", "--prune", "--no-tags"], {
+              cwd: p.folder,
+              on: p.machine,
+            });
+            await this.loadBranches(p.folder, p.machine);
+          }
         } catch {
         } finally {
           this.fetching = false;
@@ -68,7 +81,7 @@ export default class BranchSwitcher extends View {
         "git",
         [
           "for-each-ref",
-          "--format=%(refname:short)%09%(HEAD)",
+          "--format=%(refname)%09%(refname:short)%09%(HEAD)",
           "refs/heads/",
           "refs/remotes/",
         ],
@@ -80,43 +93,73 @@ export default class BranchSwitcher extends View {
       const lines = r.stdout.split(/\r?\n/).filter(Boolean);
       const locals = [];
       const remotes = [];
+      let foundHead = false;
 
       for (const line of lines) {
-        const [ref, head] = line.split("\t");
+        const [fullRef, shortRef, head] = line.split("\t");
+        if (!fullRef) continue;
+
+        // Omitir referencias simbólicas de remotos como origin/HEAD
         if (
-          !ref ||
-          ref === "origin" ||
-          ref.endsWith("/HEAD") ||
-          ref.startsWith("origin/HEAD")
+          fullRef.startsWith("refs/remotes/") &&
+          (shortRef.endsWith("/HEAD") || !shortRef.includes("/"))
         ) {
           continue;
         }
 
-        const isCurrent = head === "*";
-        const isRemote = ref.startsWith("origin/") || ref.includes("/");
-        const simpleName = isRemote ? ref.replace(/^origin\//, "") : ref;
+        const isHead = head === "*";
+        const isLocal = fullRef.startsWith("refs/heads/");
+        const isRemote = fullRef.startsWith("refs/remotes/");
 
-        if (isCurrent) {
-          this.currentBranch = simpleName;
-        }
+        if (isLocal) {
+          const branchName = fullRef.slice("refs/heads/".length);
+          if (isHead) {
+            this.currentBranch = branchName;
+            foundHead = true;
+          }
+          locals.push({
+            name: branchName,
+            simpleName: branchName,
+            fullRef,
+            isRemote: false,
+            isCurrent: isHead,
+          });
+        } else if (isRemote) {
+          // Extraer nombre simple de la rama remota (después de refs/remotes/<remote>/)
+          const remotePath = fullRef.slice("refs/remotes/".length);
+          const slashIdx = remotePath.indexOf("/");
+          const remoteName = slashIdx !== -1 ? remotePath.slice(0, slashIdx) : "";
+          const branchName =
+            slashIdx !== -1 ? remotePath.slice(slashIdx + 1) : remotePath;
 
-        const item = {
-          name: ref,
-          simpleName,
-          isRemote,
-          isCurrent,
-        };
-
-        if (isRemote) {
-          remotes.push(item);
-        } else {
-          locals.push(item);
+          remotes.push({
+            name: shortRef,
+            simpleName: branchName,
+            remoteName,
+            fullRef,
+            isRemote: true,
+            isCurrent: isHead,
+          });
         }
       }
 
-      // Ordenar: primero ramas locales, luego remotas que no tengan rama local
-      const localNames = new Set(locals.map((b) => b.name));
-      const filteredRemotes = remotes.filter((b) => !localNames.has(b.simpleName));
+      // Si no se encontró rama actual (HEAD detached), buscar commit corto
+      if (!foundHead) {
+        const headCheck = await exec(
+          "git",
+          ["rev-parse", "--short", "HEAD"],
+          { cwd, on }
+        );
+        if (headCheck.code === 0 && headCheck.stdout.trim()) {
+          this.currentBranch = `detached (${headCheck.stdout.trim()})`;
+        }
+      }
+
+      // Priorizar: ramas locales primero, luego ramas remotas no existentes localmente
+      const localNames = new Set(locals.map((b) => b.simpleName));
+      const filteredRemotes = remotes.filter(
+        (b) => !localNames.has(b.simpleName)
+      );
 
       this.branches = [...locals, ...filteredRemotes];
     } catch {}
@@ -145,12 +188,22 @@ export default class BranchSwitcher extends View {
     this.error = "";
     cx.notify();
 
-    // Nombre de la rama a checkout:
-    // Si es origin/foo, git checkout foo lo enlaza automáticamente a origin/foo
-    const branchName = item.simpleName;
-
     try {
-      const r = await exec("git", ["checkout", branchName], {
+      let args;
+      if (item.isRemote) {
+        const localExists = this.branches.some(
+          (b) => !b.isRemote && b.simpleName === item.simpleName
+        );
+        if (localExists) {
+          args = ["checkout", item.simpleName];
+        } else {
+          args = ["checkout", "-b", item.simpleName, "--track", item.name];
+        }
+      } else {
+        args = ["checkout", item.simpleName];
+      }
+
+      const r = await exec("git", args, {
         cwd: p.folder,
         on: p.machine,
       });
@@ -171,17 +224,24 @@ export default class BranchSwitcher extends View {
   }
 
   key(e, cx) {
+    if (e.key === "escape") {
+      cx.stop_propagation();
+      return closeOverlay(props()?.overlay);
+    }
     const list = this.shown();
+    if (!list.length) return;
+
     if (e.key === "down") {
-      this.at = Math.min(list.length - 1, this.at + 1);
+      this.at = (this.at + 1) % list.length;
+      cx.stop_propagation();
       cx.notify();
     } else if (e.key === "up") {
-      this.at = Math.max(0, this.at - 1);
+      this.at = (this.at + list.length - 1) % list.length;
+      cx.stop_propagation();
       cx.notify();
     } else if (e.key === "enter") {
+      cx.stop_propagation();
       if (list[this.at]) this.checkout(list[this.at], cx);
-    } else if (e.key === "escape") {
-      closeOverlay(props()?.overlay);
     }
   }
 
@@ -260,7 +320,9 @@ export default class BranchSwitcher extends View {
                   .hover((s) => s.bg(t.hover))
                   .cursor_pointer()
                   .on_click(() => closeOverlay(p.overlay))
-                  .child(svg("mods/workspace-chrome/x.svg").size(14).text_color(t.dim))
+                  .child(
+                    svg("mods/workspace-chrome/x.svg").size(14).text_color(t.dim)
+                  )
               )
           )
       )
@@ -381,7 +443,9 @@ export default class BranchSwitcher extends View {
           .text_color(t.dim)
           .child(
             div().child(
-              this.busy ? "Cambiando de rama..." : `${rows.length} ramas disponibles`
+              this.busy
+                ? "Cambiando de rama..."
+                : `${rows.length} ramas disponibles`
             )
           )
           .child(div().child("↑↓ elegir · ↵ cambiar · esc cancelar"))

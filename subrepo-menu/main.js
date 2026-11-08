@@ -1,6 +1,6 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { run, props, closeOverlay, openOverlay, theme } from "herdr";
+import { run, props, closeOverlay, openOverlay, theme, notify } from "herdr";
 
 export default class SubrepoMenu extends View {
   init(_props, cx) {
@@ -61,7 +61,10 @@ export default class SubrepoMenu extends View {
       if (p.spaceId) run("space.select", { id: p.spaceId });
       run("pane.split", { direction: "right", folder: p.folder });
     } else if (it.action === "copy") {
-      run("terminal.copy", { text: p.folder });
+      if (p.folder) {
+        cx.write_to_clipboard(p.folder);
+        notify({ body: `Ruta copiada: ${p.folder}`, timeout: 2000 });
+      }
     }
   }
 
@@ -84,6 +87,7 @@ export default class SubrepoMenu extends View {
         else if (e.key === "enter") this.choose(this.at, cx);
         else if (e.key === "escape") closeOverlay(props()?.overlay);
         else return;
+        cx.stop_propagation();
         cx.notify();
       })
       .child(

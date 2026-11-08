@@ -486,7 +486,10 @@ export default class Spaces extends View {
         }
         cx.notify();
       })
-      .on_mouse_down("right", () => this.subrepoMenu(space, sub))
+      .on_mouse_down("right", (_e, cx) => {
+        cx.stop_propagation();
+        this.subrepoMenu(space, sub);
+      })
       .child(
         h_flex()
           .gap(7)
