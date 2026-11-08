@@ -2,3 +2,4 @@ node_modules/
 *.log
 subrepo-menu/gpui-kit.d.ts
 branch-switcher/gpui-kit.d.ts
+changes/gpui-kit.d.ts
