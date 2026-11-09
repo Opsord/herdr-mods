@@ -49,11 +49,12 @@ export default class SubrepoMenu extends View {
 
     if (it.action === "branch-switch") {
       openOverlay({
-        mod: "branch-switcher",
+        mod: "project-spaces",
         kind: "dialog",
         width: 500,
         height: 440,
         props: {
+          role: "branch-switcher",
           sub: p.sub,
           spaceId: p.spaceId,
           machine: p.machine,

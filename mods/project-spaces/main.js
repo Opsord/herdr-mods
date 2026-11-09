@@ -5,7 +5,14 @@
 
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
-import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, appHome, readTextFile } from "herdr";
+import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, appHome, readTextFile, props } from "herdr";
+import SubrepoMenu from "./menu.js";
+import BranchSwitcher from "./branch-switcher.js";
+
+const ROLES = {
+  menu: SubrepoMenu,
+  "branch-switcher": BranchSwitcher,
+};
 
 function find(node, id) {
   if (node?.id === id) return node;
@@ -46,7 +53,14 @@ export function tone(t, status) {
 }
 
 export default class Spaces extends View {
-  init(_props, cx) {
+  init(p, cx) {
+    const pr = props() ?? p ?? {};
+    const R = ROLES[pr.role];
+    if (R) {
+      this.delegate = new R();
+      this.delegate.init?.(pr, cx);
+      return;
+    }
     this.git = {}; // where() -> { name, branch, ahead, behind, repo, linked }, null: not a repo
     this.checked = {}; // where() -> when it was last looked at
     this.unsure = new Set(); // where()s git couldn't answer for (a machine away)
@@ -390,11 +404,12 @@ export default class Spaces extends View {
 
   subrepoMenu(space, sub) {
     openOverlay({
-      mod: "subrepo-menu",
+      mod: "project-spaces",
       kind: "popup",
       width: 220,
       height: 160,
       props: {
+        role: "menu",
         sub,
         spaceId: space.id,
         machine: space.machine ?? null,
@@ -406,11 +421,12 @@ export default class Spaces extends View {
 
   folderMenu(space, dir) {
     openOverlay({
-      mod: "subrepo-menu",
+      mod: "project-spaces",
       kind: "popup",
       width: 220,
       height: 130,
       props: {
+        role: "menu",
         sub: { name: dir.name },
         spaceId: space.id,
         machine: space.machine ?? null,
@@ -894,7 +910,8 @@ export default class Spaces extends View {
       .child(div().text_color(tone(t, w.status)).child(glyph(w.status)));
   }
 
-  render() {
+  render(cx) {
+    if (this.delegate) return this.delegate.render(cx);
     const t = theme();
     const collapsed = narrow();
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];

@@ -1,0 +1,13 @@
+{
+  "max_depth": 2,
+  "exclude": [
+    "node_modules",
+    "dist",
+    "target",
+    ".venv",
+    "vendor",
+    ".cache",
+    "build",
+    ".next"
+  ]
+}
