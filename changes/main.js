@@ -46,6 +46,10 @@ export default class Changes extends View {
     this.files = []; this.rows = []; this.diffWidth = 0; this.message = ""; this.open = null; this.handle = cx.focus_handle();
     this.repos = [];
     this.selectedRepoPath = null;
+    this.userSelectedRepo = null;
+    this.lastCwdRepoPath = null;
+    this.loadVersion = 0;
+    this.pendingRefresh = false;
     this.repoMenuOpen = false;
     this.spaceId = null;
     this.lastBaseFolder = null;
@@ -131,6 +135,7 @@ export default class Changes extends View {
       cx.notify();
       return;
     }
+    this.userSelectedRepo = path;
     this.selectedRepoPath = path;
     this.repoMenuOpen = false;
     this.open = null;
@@ -175,6 +180,7 @@ export default class Changes extends View {
 
     // 2. Scan subdirectories (depth 3) for nested git repositories
     try {
+      const candidatePaths = [];
       if (on) {
         const r = await exec("sh", ["-c", "find . -maxdepth 4 -name .git -print"], { cwd: cleanFolder, on });
         if (r.code === 0 && r.stdout) {
@@ -183,20 +189,17 @@ export default class Changes extends View {
             const cleaned = line.replace(/\/\.git$/, "").replace(/^\.\//, "");
             if (!cleaned) continue;
             const full = norm(`${cleanFolder}/${cleaned}`);
-            if (!repos.some((rep) => rep.path.toLowerCase() === full.toLowerCase())) {
-              const rel = full.slice(cleanFolder.length).replace(/^\/+/, "");
-              const branch = await this.getRepoBranch(full, on);
-              repos.push({
-                name: full.split("/").pop(),
-                rel: rel.replace(/\//g, " / "),
-                path: full,
-                branch,
-              });
+            if (
+              !candidatePaths.some((p) => p.toLowerCase() === full.toLowerCase()) &&
+              !repos.some((rep) => rep.path.toLowerCase() === full.toLowerCase())
+            ) {
+              candidatePaths.push(full);
             }
           }
         }
       } else {
-        const modScript = `${appHome().replace(/\\/g, "/")}/mods/project-changes/scan.ps1`;
+        const home = appHome().replace(/\\/g, "/");
+        const modScript = `${home}/mods/project-changes/scan.ps1`;
         const r = await exec("powershell", [
           "-NoProfile",
           "-ExecutionPolicy",
@@ -212,18 +215,31 @@ export default class Changes extends View {
           const lines = r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
           for (const line of lines) {
             const full = norm(line);
-            if (!repos.some((rep) => rep.path.toLowerCase() === full.toLowerCase())) {
-              const rel = full.slice(cleanFolder.length).replace(/^\/+/, "");
-              const branch = await this.getRepoBranch(full, on);
-              repos.push({
-                name: full.split("/").pop(),
-                rel: rel.replace(/\//g, " / "),
-                path: full,
-                branch,
-              });
+            if (
+              full &&
+              !candidatePaths.some((p) => p.toLowerCase() === full.toLowerCase()) &&
+              !repos.some((rep) => rep.path.toLowerCase() === full.toLowerCase())
+            ) {
+              candidatePaths.push(full);
             }
           }
         }
+      }
+
+      if (candidatePaths.length > 0) {
+        const subrepos = await Promise.all(
+          candidatePaths.map(async (full) => {
+            const rel = full.slice(cleanFolder.length).replace(/^\/+/, "");
+            const branch = await this.getRepoBranch(full, on);
+            return {
+              name: full.split("/").pop(),
+              rel: rel.replace(/\//g, " / "),
+              path: full,
+              branch,
+            };
+          })
+        );
+        repos.push(...subrepos);
       }
     } catch {}
 
@@ -250,7 +266,7 @@ export default class Changes extends View {
     return h_flex()
       .id("changes-repo-selector")
       .h(22)
-      .max_w(170)
+      .max_w(145)
       .min_w(0)
       .px(6)
       .gap(4)
@@ -320,62 +336,76 @@ export default class Changes extends View {
       )
       .child(div().h(1).bg(t.border).my(2))
       .child(
-        v_flex()
+        div()
+          .relative()
           .max_h(220)
-          .overflow_y_scroll()
-          .gap(2)
-          .children(
-            this.repos.map((repo) => {
-              const isSelected = repo.path === this.selectedRepoPath;
-              return h_flex()
-                .id(`repo-opt-${repo.name.replace(/[^a-zA-Z0-9_-]/g, "-")}`)
-                .h(32)
-                .px(8)
-                .gap(8)
-                .items_center()
-                .rounded(6)
-                .cursor_pointer()
-                .when(isSelected, (s) => s.bg(t.raised))
-                .hover((s) => s.bg(t.hover))
-                .on_click((_e, cx) => this.selectRepo(repo.path, cx))
-                .child(
-                  svg("mods/workspace-chrome/git-branch.svg")
-                    .size(13)
-                    .flex_none()
-                    .text_color(isSelected ? t.accent : t.muted)
-                )
-                .child(
-                  v_flex()
-                    .flex_1()
-                    .min_w(0)
-                    .justify_center()
+          .min_h(0)
+          .child(
+            v_flex()
+              .id("changes-repo-scroll-list")
+              .size_full()
+              .max_h(220)
+              .overflow_y_scroll()
+              .gap(2)
+              .children(
+                this.repos.map((repo) => {
+                  const isSelected = repo.path === this.selectedRepoPath;
+                  return h_flex()
+                    .id(`repo-opt-${repo.path.replace(/[^a-zA-Z0-9_-]/g, "-")}`)
+                    .h(32)
+                    .px(8)
+                    .gap(8)
+                    .items_center()
+                    .rounded(6)
+                    .cursor_pointer()
+                    .when(isSelected, (s) => s.bg(t.raised))
+                    .hover((s) => s.bg(t.hover))
+                    .on_click((_e, cx) => this.selectRepo(repo.path, cx))
                     .child(
-                      div()
-                        .truncate()
-                        .text_size(11.5)
-                        .font_medium()
-                        .text_color(isSelected ? t.foreground : t.muted)
-                        .child(repo.rel || repo.name)
+                      svg("mods/workspace-chrome/git-branch.svg")
+                        .size(13)
+                        .flex_none()
+                        .text_color(isSelected ? t.accent : t.muted)
                     )
-                    .when(Boolean(repo.branch), (el) =>
+                    .child(
+                      v_flex()
+                        .flex_1()
+                        .min_w(0)
+                        .justify_center()
+                        .child(
+                          div()
+                            .truncate()
+                            .text_size(11.5)
+                            .font_medium()
+                            .text_color(isSelected ? t.foreground : t.muted)
+                            .child(repo.rel || repo.name)
+                        )
+                        .when(Boolean(repo.branch), (el) =>
+                          el.child(
+                            div()
+                              .truncate()
+                              .text_size(10)
+                              .text_color(t.dim)
+                              .child(repo.branch)
+                          )
+                        )
+                    )
+                    .when(isSelected, (el) =>
                       el.child(
-                        div()
-                          .truncate()
-                          .text_size(10)
-                          .text_color(t.dim)
-                          .child(repo.branch)
+                        svg("mods/workspace-chrome/check.svg")
+                          .size(12)
+                          .flex_none()
+                          .text_color(t.accent)
                       )
-                    )
-                )
-                .when(isSelected, (el) =>
-                  el.child(
-                    svg("mods/workspace-chrome/check.svg")
-                      .size(12)
-                      .flex_none()
-                      .text_color(t.accent)
-                  )
-                );
-            })
+                    );
+                })
+              )
+          )
+          .child(
+            Scrollbar.vertical("changes-repo-scroll-list")
+              .viewport_from_layout()
+              .absolute()
+              .inset_0()
           )
       );
   }
@@ -383,7 +413,7 @@ export default class Changes extends View {
   buildChangesTree(files) {
     const root = { dirs: new Map(), files: [] };
     for (const f of files) {
-      const cleanPath = (f.path || "").replace(/\\/g, "/");
+      const cleanPath = (f.path || "").replace(/\\/g, "/").replace(/^\/+/, "");
       const parts = cleanPath.split("/");
       if (parts.length <= 1) {
         root.files.push(f);
@@ -553,7 +583,15 @@ export default class Changes extends View {
   }
 
   refresh(cx) {
-    if (this.loading || this.busy) return;
+    if (this.busy) return;
+    this.loadVersion = (this.loadVersion || 0) + 1;
+    const version = this.loadVersion;
+
+    if (this.loading) {
+      this.pendingRefresh = true;
+      return;
+    }
+
     const { cwd, on } = location(), context = key();
     const space = spaces().find((s) => s.active);
     const spaceId = space?.id ?? null;
@@ -564,6 +602,8 @@ export default class Changes extends View {
       if (this.spaceId !== spaceId) {
         this.spaceId = spaceId;
         this.selectedRepoPath = null;
+        this.userSelectedRepo = null;
+        this.lastCwdRepoPath = null;
         this.repos = [];
         this.repoMenuOpen = false;
         this.lastBaseFolder = null;
@@ -574,47 +614,48 @@ export default class Changes extends View {
     this.loading = true;
     cx.spawn(async (cx) => {
       try {
-        const baseFolder = cwd || space?.folder;
+        const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "");
+        const cleanCwd = norm(cwd);
+        const spaceFolder = space?.folder ? norm(space.folder) : null;
 
-        // 1. Discover all repos in baseFolder
-        let discovered = await this.discoverRepos(baseFolder, on);
-
-        // If baseFolder only found 1 repo (itself) or 0 repos, check its parent folder
-        // in case we are in a subrepo within a multi-repo folder
-        if (discovered.length <= 1 && baseFolder) {
-          const normBase = baseFolder.replace(/\\/g, "/").replace(/\/+$/, "");
-          const parts = normBase.split("/");
-          if (parts.length > 2) {
-            const parent = parts.slice(0, -1).join("/");
-            const parentName = parts[parts.length - 2].toLowerCase();
-            if (!parent.endsWith(":") && parentName !== "users" && parentName !== "home") {
-              const parentRepos = await this.discoverRepos(parent, on);
-              if (parentRepos.length > 1) {
-                discovered = parentRepos;
-              }
-            }
-          }
+        // Bound discovery strictly to the active space root (never scan higher than space.folder)
+        let baseFolder = spaceFolder || cleanCwd;
+        if (spaceFolder && cleanCwd && !cleanCwd.toLowerCase().startsWith(spaceFolder.toLowerCase())) {
+          baseFolder = cleanCwd;
         }
 
-        if (key() !== context) return;
+        let discovered = await this.discoverRepos(baseFolder, on);
+        if (discovered.length === 0 && cleanCwd && cleanCwd !== baseFolder) {
+          discovered = await this.discoverRepos(cleanCwd, on);
+        }
+
+        if (this.loadVersion !== version || key() !== context) return;
         this.repos = discovered;
 
         // 2. Determine target repository path
+        const cwdRepo = discovered.find((r) => {
+          const rp = r.path.toLowerCase();
+          return cleanCwd.toLowerCase() === rp || cleanCwd.toLowerCase().startsWith(rp + "/");
+        });
+        const cwdRepoPath = cwdRepo?.path || null;
+        const terminalRepoChanged = cwdRepoPath && cwdRepoPath !== this.lastCwdRepoPath;
+        this.lastCwdRepoPath = cwdRepoPath;
+
         let target = null;
-        if (this.selectedRepoPath && discovered.some((r) => r.path === this.selectedRepoPath)) {
+        if (terminalRepoChanged) {
+          target = cwdRepoPath;
+          this.userSelectedRepo = null;
+        } else if (this.userSelectedRepo && discovered.some((r) => r.path === this.userSelectedRepo)) {
+          target = this.userSelectedRepo;
+        } else if (this.selectedRepoPath && discovered.some((r) => r.path === this.selectedRepoPath)) {
           target = this.selectedRepoPath;
+        } else if (cwdRepoPath) {
+          target = cwdRepoPath;
         } else if (spaceId) {
           const saved = localStorage.getItem(`changes.selected_repo:${spaceId}`);
           if (saved && discovered.some((r) => r.path === saved)) {
             target = saved;
           }
-        }
-
-        // If active pane cwd is inside one of the discovered repos, match it
-        if (!target && cwd) {
-          const normCwd = cwd.replace(/\\/g, "/").toLowerCase();
-          const match = discovered.find((r) => normCwd.startsWith(r.path.toLowerCase()));
-          if (match) target = match.path;
         }
 
         if (!target && discovered.length > 0) {
@@ -626,7 +667,7 @@ export default class Changes extends View {
         this.selectedRepoPath = target;
 
         const top = await exec("git", ["rev-parse", "--show-toplevel"], { cwd: target, on });
-        if (key() !== context) return;
+        if (this.loadVersion !== version || key() !== context) return;
         if (top.code !== 0) {
           this.root = null; this.files = []; this.setLines([]); this.open = null;
           this.error = discovered.length === 0 ? "Not a git repository" : "Select a repository above";
@@ -650,22 +691,30 @@ export default class Changes extends View {
         const files = [];
         const entries = status.stdout.split("\0").filter(Boolean);
         for (const entry of entries.slice(0, 1000)) {
+          if (entry.length < 4) continue;
           const xy = entry.slice(0, 2), path = entry.slice(3), fresh = xy === "??";
           const conflict = xy.includes("U") || xy === "AA" || xy === "DD";
           const s = conflict ? "U" : xy.includes("D") ? "D" : fresh || xy.includes("A") ? "A" : "M";
           const stat = stats[path] ?? { add: 0, del: 0 };
           files.push({ path, status: s, fresh, ...stat });
         }
-        if (key() !== context) return;
+        if (this.loadVersion !== version || key() !== context) return;
         this.root = root; this.on = on; this.hasHead = head.code === 0; this.files = files; this.limited = entries.length > 1000; this.error = null;
         this.watch(root, cx);
         if (this.open && !files.some((f) => f.path === this.open)) { this.open = null; this.setLines([]); }
         if (this.open) {
           try { await this.load(this.open, context); }
-          catch { if (key() === context) this.setLines(["Cannot preview this diff (too large or unreadable)"]); }
+          catch { if (this.loadVersion === version && key() === context) this.setLines(["Cannot preview this diff (too large or unreadable)"]); }
         }
-      } catch (e) { if (key() === context) this.error = String(e); }
-      finally { this.loading = false; cx.notify(); }
+      } catch (e) { if (this.loadVersion === version && key() === context) this.error = String(e); }
+      finally {
+        this.loading = false;
+        if (this.pendingRefresh) {
+          this.pendingRefresh = false;
+          this.refresh(cx);
+        }
+        cx.notify();
+      }
     });
   }
 
@@ -868,11 +917,10 @@ export default class Changes extends View {
                   .child(
                     h_flex()
                       .id("changes-collapse-all")
-                      .h(22)
-                      .px(6)
-                      .gap(4)
+                      .size(22)
                       .flex_none()
                       .items_center()
+                      .justify_center()
                       .rounded(5)
                       .border_1()
                       .border_color(t.border)
@@ -882,25 +930,18 @@ export default class Changes extends View {
                       .on_click((_e, cx) => this.collapseAll(cx))
                       .child(
                         svg("mods/workspace-chrome/chevron-right.svg")
-                          .size(11)
+                          .size(12)
                           .flex_none()
                           .text_color(t.muted)
-                      )
-                      .child(
-                        div()
-                          .text_size(10.5)
-                          .text_color(t.muted)
-                          .child("Collapse")
                       )
                   )
                   .child(
                     h_flex()
                       .id("changes-expand-all")
-                      .h(22)
-                      .px(6)
-                      .gap(4)
+                      .size(22)
                       .flex_none()
                       .items_center()
+                      .justify_center()
                       .rounded(5)
                       .border_1()
                       .border_color(t.border)
@@ -910,15 +951,9 @@ export default class Changes extends View {
                       .on_click((_e, cx) => this.expandAll(cx))
                       .child(
                         svg("mods/workspace-chrome/chevron-down.svg")
-                          .size(11)
+                          .size(12)
                           .flex_none()
                           .text_color(t.muted)
-                      )
-                      .child(
-                        div()
-                          .text_size(10.5)
-                          .text_color(t.muted)
-                          .child("Expand")
                       )
                   )
               )
@@ -1020,6 +1055,12 @@ export default class Changes extends View {
               .id("changes-repo-backdrop")
               .absolute()
               .inset_0()
+              .bg("#00000001")
+              .on_mouse_down("left", (_e, cx) => {
+                this.repoMenuOpen = false;
+                cx.stop_propagation();
+                cx.notify();
+              })
               .on_click((_e, cx) => {
                 this.repoMenuOpen = false;
                 cx.stop_propagation();
