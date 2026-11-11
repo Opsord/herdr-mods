@@ -3,11 +3,12 @@
 // its first terminal is in now, only where unusual: branch, ahead/behind. Agent state lives in the agents list, not here. Click to
 // switch, right-click for its menu, drag to reorder.
 
-import { View, div, svg } from "gpui-kit";
+import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, appHome, readTextFile, props } from "herdr";
 import SubrepoMenu from "./menu.js";
 import BranchSwitcher from "./branch-switcher.js";
+import { TEXT, RADIUS, SIZE, Badge, Icon, IconButton } from "./ui.js";
 
 const ROLES = {
   menu: SubrepoMenu,
@@ -164,18 +165,8 @@ export default class Spaces extends View {
         ]).join(",");
 
         let list = [];
-        if (space.machine) {
-          // Remote machine: use find
-          const r = await exec("sh", ["-c", `find . -maxdepth ${depth + 1} -name .git -print`], { cwd: folder, on: space.machine });
-          if (r.code === 0 && r.stdout) {
-            const rawLines = r.stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-            list = rawLines.map(line => {
-              const cleaned = line.replace(/\/\.git$/, "").replace(/^\.\//, "");
-              const full = cleaned ? `${folder}/${cleaned}` : folder;
-              return { name: base(full), path: full.replace(/\\/g, "/"), spaceId: space.id, machine: space.machine };
-            }).filter(item => item.path !== folder.replace(/\\/g, "/"));
-          }
-        } else {
+        const isWin = !space.machine && window()?.platform === "windows";
+        if (isWin) {
           // Local Windows machine: use fast scan.ps1
           const scriptPath = `${appHome().replace(/\\/g, "/")}/mods/project-spaces/scan.ps1`;
           const r = await exec("powershell", [
@@ -206,6 +197,17 @@ export default class Spaces extends View {
                 machine: null,
               };
             });
+          }
+        } else {
+          // macOS, Linux, or remote machine: use cross-platform find
+          const r = await exec("sh", ["-c", `find . -maxdepth ${depth + 1} -name .git -print`], { cwd: folder, on: space.machine ?? null });
+          if (r.code === 0 && r.stdout) {
+            const rawLines = r.stdout.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            list = rawLines.map(line => {
+              const cleaned = line.replace(/\/\.git$/, "").replace(/^\.\//, "");
+              const full = cleaned ? `${folder}/${cleaned}` : folder;
+              return { name: base(full), path: full.replace(/\\/g, "/"), spaceId: space.id, machine: space.machine ?? null };
+            }).filter(item => item.path !== folder.replace(/\\/g, "/"));
           }
         }
 
@@ -525,7 +527,7 @@ export default class Spaces extends View {
     return rootNode;
   }
 
-  renderSubrepoTree(space, node, depth, hasParentFolder, activeCwds, t) {
+  renderSubrepoTree(space, node, depth, hasParentFolder, activeCwds, t, ps) {
     const rows = [];
     const dirList = [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
     const repoList = [...node.repos].sort((a, b) => a.name.localeCompare(b.name));
@@ -534,14 +536,14 @@ export default class Spaces extends View {
       const isFolded = this.subfoldersFolded.has(`${space.id}:${dir.relPath}`);
       rows.push(this.subfolderRow(space, dir, depth, activeCwds, t));
       if (!isFolded) {
-        rows.push(...this.renderSubrepoTree(space, dir, depth + 1, true, activeCwds, t));
+        rows.push(...this.renderSubrepoTree(space, dir, depth + 1, true, activeCwds, t, ps));
       }
     }
 
     for (let i = 0; i < repoList.length; i++) {
       const repo = repoList[i];
       const isLast = i === repoList.length - 1;
-      rows.push(this.subrepoRow(space, repo, depth, isLast, hasParentFolder, activeCwds, t));
+      rows.push(this.subrepoRow(space, repo, depth, isLast, hasParentFolder, activeCwds, t, ps));
     }
 
     return rows;
@@ -549,19 +551,19 @@ export default class Spaces extends View {
 
   subfolderRow(space, dir, depth, activeCwds, t) {
     const isFolded = this.subfoldersFolded.has(`${space.id}:${dir.relPath}`);
-    const indent = 20 + depth * 14;
+    const indent = 16 + depth * 14;
     const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const isCurrent = activeCwds.has(norm(dir.fullPath));
 
     return h_flex()
       .id(`subfolder-${space.id}-${dir.relPath.replace(/[^a-zA-Z0-9_-]/g, "-")}`)
-      .h(26)
+      .h(SIZE.row)
       .flex_none()
       .px(8)
       .pl(indent)
       .gap(6)
       .items_center()
-      .rounded(6)
+      .rounded(RADIUS.control)
       .cursor_pointer()
       .tooltip(isFolded ? `Expand ${dir.name}` : `Collapse ${dir.name}`)
       .when(isCurrent, (el) => el.bg(t.raised))
@@ -578,39 +580,123 @@ export default class Spaces extends View {
         this.folderMenu(space, dir);
       })
       .child(
-        svg(`mods/workspace-chrome/chevron-${isFolded ? "right" : "down"}.svg`)
-          .size(11)
-          .flex_none()
+        Icon(isFolded ? "chevron-right" : "chevron-down", 11)
           .text_color(t.dim)
       )
       .child(
-        svg("mods/workspace-chrome/folder.svg")
-          .size(12)
-          .flex_none()
-          .text_color(t.dim)
+        Icon("folder", 13)
+          .text_color(isCurrent ? t.accent : t.dim)
       )
       .child(
         div()
           .flex_1()
           .min_w(0)
           .truncate()
-          .text_size(11.5)
+          .text_size(TEXT.body)
           .font_medium()
-          .text_color(t.foreground)
+          .text_color(isCurrent ? t.foreground : t.muted)
           .child(dir.name)
       );
   }
 
-  subrepoRow(space, sub, depth, isLast, hasParentFolder, activeCwds, t) {
+  subrepoLiveBadges(space, subPath, ps, isCurrent, t) {
+    const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    const targetNorm = norm(subPath);
+    const spaceTabIds = new Set((space.tabs ?? []).map((tab) => tab.id));
+
+    const matchingPanes = (ps ?? []).filter((p) => {
+      if (!p.cwd || !spaceTabIds.has(p.tab)) return false;
+      const cwdNorm = norm(p.cwd);
+      return cwdNorm === targetNorm || cwdNorm.startsWith(targetNorm + "/");
+    });
+
+    if (!matchingPanes.length) return [];
+
+    const terminalsCount = matchingPanes.filter((p) => p.terminal).length;
+    const agentsInRepo = matchingPanes.filter((p) => Boolean(p.status || p.program?.agent || p.app));
+
+    let mostUrgent = null;
+    const priorities = { blocked: 4, done: 3, working: 2, idle: 1 };
+    for (const a of agentsInRepo) {
+      const s = a.status ?? (a.program?.agent ? "working" : "idle");
+      if (!mostUrgent || (priorities[s] ?? 0) > (priorities[mostUrgent] ?? 0)) {
+        mostUrgent = s;
+      }
+    }
+
+    const badges = [];
+
+    // Terminal count badge
+    if (terminalsCount > 0) {
+      badges.push(
+        h_flex()
+          .gap(3)
+          .items_center()
+          .px(4)
+          .py(1)
+          .rounded(RADIUS.small)
+          .border_1()
+          .border_color(isCurrent ? t.accent : t.border)
+          .tooltip(`${terminalsCount} terminal${terminalsCount === 1 ? "" : "s"} open in this repository`)
+          .child(Icon("terminal", 10).text_color(isCurrent ? t.accent : t.dim))
+          .child(
+            div()
+              .text_size(TEXT.badge)
+              .font_medium()
+              .text_color(isCurrent ? t.accent : t.muted)
+              .child(String(terminalsCount))
+          )
+      );
+    }
+
+    // Agent status badge
+    if (agentsInRepo.length > 0) {
+      let statusColor = t.dim;
+      if (mostUrgent === "blocked") statusColor = t.blocked ?? "#ef4444";
+      else if (mostUrgent === "working") statusColor = t.ansi3 ?? "#e3814f";
+      else if (mostUrgent === "done") statusColor = t.ansi2 ?? "#3fae6a";
+
+      const agentName = agentsInRepo.length === 1
+        ? (agentsInRepo[0].program?.name || agentsInRepo[0].app || "Agent")
+        : `${agentsInRepo.length} agents`;
+
+      const label = mostUrgent === "blocked" ? "needs you" : agentName;
+
+      badges.push(
+        h_flex()
+          .gap(3)
+          .items_center()
+          .px(4)
+          .py(1)
+          .rounded(RADIUS.small)
+          .border_1()
+          .border_color(statusColor)
+          .tooltip(`${agentName} (${mostUrgent ?? "idle"})`)
+          .child(Icon("bot", 11).text_color(statusColor))
+          .child(
+            div()
+              .text_size(TEXT.badge)
+              .font_medium()
+              .text_color(statusColor)
+              .child(label)
+          )
+      );
+    }
+
+    return badges;
+  }
+
+  subrepoRow(space, sub, depth, isLast, hasParentFolder, activeCwds, t, ps) {
     const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const subNorm = norm(sub.path);
     const isCurrent = activeCwds.has(subNorm);
 
     const gitKey = JSON.stringify([sub.machine, sub.path]);
     const g = this.git[gitKey];
-    const subGit = this.gitSubtitle(g, sub.name, t);
-    const height = subGit ? 36 : 26;
-    const indent = 20 + depth * 14;
+    const liveBadges = this.subrepoLiveBadges(space, sub.path, ps, isCurrent, t);
+    const subGit = this.gitSubtitle(g, sub.name, t, liveBadges);
+    const height = subGit ? SIZE.rowDetail : SIZE.row;
+    const indent = 16 + depth * 14;
 
     return v_flex()
       .id(`subrepo-${space.id}-${(sub.relPath || sub.name).replace(/[^a-zA-Z0-9_-]/g, "-")}`)
@@ -619,7 +705,7 @@ export default class Spaces extends View {
       .h(height)
       .flex_none()
       .justify_center()
-      .rounded(6)
+      .rounded(RADIUS.row)
       .cursor_pointer()
       .when(isCurrent, (el) => el.bg(t.raised))
       .when(!isCurrent, (el) => el.hover((s) => s.bg(t.hover)))
@@ -628,9 +714,9 @@ export default class Spaces extends View {
         if (!space.active) {
           run("space.select", { id: space.id });
         }
-        const ps = panes();
+        const psList = ps ?? panes();
         const spaceTabIds = new Set((space.tabs ?? []).map((tab) => tab.id));
-        const existingPane = ps.find(
+        const existingPane = psList.find(
           (p) =>
             spaceTabIds.has(p.tab) &&
             p.cwd &&
@@ -653,44 +739,30 @@ export default class Spaces extends View {
           .gap(6)
           .items_center()
           .child(
-            div()
-              .font_family("JetBrains Mono")
-              .text_size(11)
-              .flex_none()
-              .text_color(t.dim)
-              .child(isLast ? "└─" : "├─")
-          )
-          .child(
-            svg("mods/workspace-chrome/folder.svg")
-              .size(12)
-              .flex_none()
+            Icon("branch", 13)
               .text_color(isCurrent ? t.accent : t.dim)
           )
           .child(
-            v_flex()
+            div()
               .flex_1()
               .min_w(0)
-              .justify_center()
-              .gap(1)
-              .child(
-                div()
-                  .min_w(0)
-                  .truncate()
-                  .text_size(11.5)
-                  .text_color(isCurrent ? t.foreground : t.muted)
-                  .child(sub.name)
-              )
-              .when(Boolean(subGit), (el) => el.child(subGit))
+              .truncate()
+              .text_size(TEXT.body)
+              .font_medium()
+              .text_color(isCurrent ? t.foreground : t.muted)
+              .child(sub.name)
           )
-      );
+      )
+      .when(Boolean(subGit), (el) => el.child(subGit));
   }
 
   // The rows, under a header per machine once one isn't this computer.
   grouped(t, collapsed) {
     const rows = this.ordered();
+    const ps = panes();
     const draw = (r) => {
       if (collapsed) return [this.compact(r, t)];
-      const mainRow = this.row(r, t);
+      const mainRow = this.row(r, t, ps);
 
       const isFolded = this.subreposFolded.has(r.w.id);
       if (isFolded) return [mainRow];
@@ -698,7 +770,6 @@ export default class Spaces extends View {
       const subs = this.subrepos[r.w.id] ?? [];
       const isScanning = this.subreposScanning.has(r.w.id);
 
-      const ps = panes();
       const activeTab = r.w.tabs?.find((tab) => tab.active);
       const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
       const activeCwds = new Set(
@@ -706,7 +777,7 @@ export default class Spaces extends View {
       );
 
       const tree = this.buildSubrepoTree(subs, place(r.w, ps));
-      const subRows = this.renderSubrepoTree(r.w, tree, 0, false, activeCwds, t);
+      const subRows = this.renderSubrepoTree(r.w, tree, 0, false, activeCwds, t, ps);
       if (isScanning && !subs.length) {
         subRows.push(
           h_flex()
@@ -744,7 +815,7 @@ export default class Spaces extends View {
           localStorage.setItem("machines.folded", JSON.stringify([...this.folded]));
           cx.notify();
         })
-        .child(svg(`mods/workspace-chrome/${m ? "server" : "monitor"}.svg`).size(13).flex_none())
+        .child(Icon(m ? "server" : "monitor", 13))
         .when(!collapsed, el => el.child(div().flex_1().truncate().child(m ?? "This computer"))
           .when(!connected && !rebuilt, el => el.child(div().flex_none().child((machine?.state ?? "asleep").replace(/_/g, " "))))
           .when(rebuilt, el => el.child(h_flex().flex_none().gap(3).items_center()
@@ -757,34 +828,120 @@ export default class Spaces extends View {
           .when(connected, el => el.child(div().id(`machine-add-${m ?? "local"}`).flex_none().px(4).rounded(4).hover(s => s.bg(t.hover).text_color(t.foreground))
             .on_click((_e, cx) => { cx.stop_propagation(); run("space.new", { machine: m ?? "" }); }).child("+")))
           .child(div().size(6).rounded(3).flex_none().bg(connected ? t.ansi2 : t.dim))
-          .child(svg(`mods/workspace-chrome/chevron-${folded ? "right" : "down"}.svg`).size(11).flex_none()));
-      const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(28).flex_none().px(8).gap(7).items_center().rounded(7)
-        .text_size(12).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
+          .child(Icon(folded ? "chevron-right" : "chevron-down", 11)));
+      const empty = h_flex().id(`machine-new-${m ?? "local"}`).h(28).flex_none().px(8).gap(7).items_center().rounded(RADIUS.control)
+        .text_size(TEXT.body).text_color(t.dim).hover(s => s.bg(t.hover).text_color(t.foreground))
         .on_click(() => run("space.new", { machine: m ?? "" }))
-        .child(svg("mods/workspace-chrome/plus.svg").size(12)).when(!collapsed, el => el.child("New space there"));
+        .child(Icon("plus", 12)).when(!collapsed, el => el.child("New space there"));
       if (!collapsed && rebuilt) return [head];
       return [head, ...(folded ? [] : mine.length ? mine.flatMap(draw) : [loading(m) ? loadingRow(m) : empty])];
     });
   }
 
-  gitSubtitle(g, name, t) {
-    if (!g || !g.branch) return null;
-    const same = (a) => (name ?? "").toLowerCase() === (g.name ?? "").toLowerCase();
-    const repo = same(name) ? "" : g.name;
-    const branch = g.branch;
-    const label = [repo, branch].filter(Boolean).join(" \u00b7 ");
+  gitSubtitle(g, name, t, liveBadges = []) {
+    const hasBranch = Boolean(g && g.branch);
+    const hasBadges = Boolean(liveBadges && liveBadges.length);
+    if (!hasBranch && !hasBadges) return null;
+
+    const same = (a) => (name ?? "").toLowerCase() === (g?.name ?? "").toLowerCase();
+    const repo = same(name) ? "" : (g?.name ?? "");
+    const branch = g?.branch ?? "";
+    const label = [repo, branch].filter(Boolean).join(" · ");
+
     return h_flex()
-      .gap(4)
+      .h(16)
+      .gap(5)
       .items_center()
-      .text_size(10.5)
+      .text_size(TEXT.label)
       .text_color(t.dim)
-      .child(svg("mods/workspace-chrome/git-branch.svg").size(10).flex_none().text_color(t.dim))
-      .child(div().min_w(0).truncate().child(label))
-      .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(t.ansi2).child(`\u2191${g.ahead}`)))
-      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
+      .when(Boolean(label), (el) =>
+        el
+          .child(Icon("git-branch", 11).text_color(t.dim))
+          .child(div().min_w(0).truncate().child(label))
+      )
+      .child(div().flex_1())
+      .when(g?.ahead > 0, (el) => el.child(Badge(`↑${g.ahead}`, "success")))
+      .when(g?.behind > 0, (el) => el.child(Badge(`↓${g.behind}`, "warning")))
+      .children(liveBadges);
   }
 
-  // Only what's unusual, after the name: "herdr \u00b7 spike \u21912 \u21931". The repo or
+  spaceLiveBadges(space, ps, t) {
+    const spaceTabIds = new Set((space.tabs ?? []).map((tab) => tab.id));
+    const matchingPanes = (ps ?? []).filter((p) => spaceTabIds.has(p.tab));
+    if (!matchingPanes.length) return [];
+
+    const terminalsCount = matchingPanes.filter((p) => p.terminal).length;
+    const agentsInSpace = matchingPanes.filter((p) => Boolean(p.status || p.program?.agent || p.app));
+
+    let mostUrgent = null;
+    const priorities = { blocked: 4, done: 3, working: 2, idle: 1 };
+    for (const a of agentsInSpace) {
+      const s = a.status ?? (a.program?.agent ? "working" : "idle");
+      if (!mostUrgent || (priorities[s] ?? 0) > (priorities[mostUrgent] ?? 0)) {
+        mostUrgent = s;
+      }
+    }
+
+    const badges = [];
+    if (terminalsCount > 0) {
+      badges.push(
+        h_flex()
+          .gap(3)
+          .items_center()
+          .px(4)
+          .py(1)
+          .rounded(RADIUS.small)
+          .border_1()
+          .border_color(t.border)
+          .tooltip(`${terminalsCount} terminal${terminalsCount === 1 ? "" : "s"} in this space`)
+          .child(Icon("terminal", 10).text_color(t.dim))
+          .child(
+            div()
+              .text_size(TEXT.badge)
+              .font_medium()
+              .text_color(t.muted)
+              .child(String(terminalsCount))
+          )
+      );
+    }
+
+    if (agentsInSpace.length > 0) {
+      let statusColor = t.dim;
+      if (mostUrgent === "blocked") statusColor = t.blocked ?? "#ef4444";
+      else if (mostUrgent === "working") statusColor = t.ansi3 ?? "#e3814f";
+      else if (mostUrgent === "done") statusColor = t.ansi2 ?? "#3fae6a";
+
+      const agentName = agentsInSpace.length === 1
+        ? (agentsInSpace[0].program?.name || agentsInSpace[0].app || "Agent")
+        : `${agentsInSpace.length} agents`;
+
+      const label = mostUrgent === "blocked" ? "needs you" : agentName;
+
+      badges.push(
+        h_flex()
+          .gap(3)
+          .items_center()
+          .px(4)
+          .py(1)
+          .rounded(RADIUS.small)
+          .border_1()
+          .border_color(statusColor)
+          .tooltip(`${agentName} (${mostUrgent ?? "idle"})`)
+          .child(Icon("bot", 11).text_color(statusColor))
+          .child(
+            div()
+              .text_size(TEXT.badge)
+              .font_medium()
+              .text_color(statusColor)
+              .child(label)
+          )
+      );
+    }
+
+    return badges;
+  }
+
+  // Only what's unusual, after the name: "herdr · spike ↑2 ↓1". The repo or
   // branch goes when the name already says it (a worktree is named after its branch),
   // and master/main go: nearly every space is on one.
   gitTail(g, tree, name, t) {
@@ -792,21 +949,21 @@ export default class Spaces extends View {
     const same = (a) => a.toLowerCase() === name.toLowerCase();
     const branch = same(raw) || raw === "master" || raw === "main" ? "" : raw;
     const repo = tree || same(g.name) ? "" : g.name;
-    const where = [repo, branch].filter(Boolean).join(" \u00b7 ");
+    const where = [repo, branch].filter(Boolean).join(" · ");
     return h_flex()
       .flex_1()
       .min_w(0)
       .gap(5)
       .justify_end()
       .items_center()
-      .text_size(11.5)
+      .text_size(TEXT.label)
       .text_color(t.dim)
       .when(Boolean(where), (el) => el.child(div().min_w(0).truncate().child(where)))
-      .when(g.ahead > 0, (el) => el.child(div().flex_none().text_color(t.ansi2).child(`\u2191${g.ahead}`)))
-      .when(g.behind > 0, (el) => el.child(div().flex_none().text_color(t.ansi1).child(`\u2193${g.behind}`)));
+      .when(g.ahead > 0, (el) => el.child(Badge(`↑${g.ahead}`, "success")))
+      .when(g.behind > 0, (el) => el.child(Badge(`↓${g.behind}`, "warning")));
   }
 
-  row({ w, i, g, tree }, t) {
+  row({ w, i, g, tree }, t, ps) {
     const on = w.active;
     const fromIndex = this.pressed === null ? -1 : spaces().findIndex(s => s.id === this.pressed);
     const colors = shared("space.colors") ?? {};
@@ -817,8 +974,9 @@ export default class Spaces extends View {
     const isScanning = this.subreposScanning.has(w.id);
     const hasSubs = subs.length > 0 || isScanning;
     const isFolded = this.subreposFolded.has(w.id);
-    const subGit = this.gitSubtitle(g, w.name, t);
-    const height = subGit ? 38 : (tree ? 28 : 30);
+    const liveBadges = this.spaceLiveBadges(w, ps, t);
+    const subGit = this.gitSubtitle(g, w.name, t, liveBadges);
+    const height = subGit ? SIZE.rowDetail : (tree ? SIZE.row : SIZE.row + 2);
 
     return v_flex()
       .relative()
@@ -827,7 +985,7 @@ export default class Spaces extends View {
       .h(height)
       .flex_none()
       .justify_center()
-      .rounded(8)
+      .rounded(RADIUS.row)
       .when(on, (el) => el.bg(t.selected))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
       .when(this.pressed === w.id && this.over !== w.id, (el) => el.opacity(0.5))
@@ -864,15 +1022,15 @@ export default class Spaces extends View {
         h_flex()
           .gap(8)
           .items_center()
-          .when(Boolean(tree), el => el.pl(22).child(svg("mods/workspace-chrome/branch.svg").size(13).text_color(t.dim)))
-          .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(5).bg(fill).items_center().justify_center().text_size(10.5).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?")))
+          .when(Boolean(tree), el => el.pl(20).child(Icon("branch", 13).text_color(t.dim)))
+          .when(!tree, el => el.child(h_flex().size(18).flex_none().rounded(RADIUS.small).bg(fill).items_center().justify_center().text_size(TEXT.avatar).font_bold().text_color("#ffffff").child([...w.name][0]?.toUpperCase() ?? "?")))
           .child(
             v_flex()
               .flex_1()
               .min_w(0)
               .justify_center()
               .gap(1)
-              .child(div().min_w(0).truncate().text_size(12).text_color(t.foreground).child(w.name))
+              .child(div().min_w(0).truncate().text_size(TEXT.body).font_medium().text_color(t.foreground).child(w.name))
               .when(Boolean(subGit), el => el.child(subGit))
           )
           .when(hasSubs, el => el.child(
@@ -882,7 +1040,7 @@ export default class Spaces extends View {
               .flex_none()
               .items_center()
               .justify_center()
-              .rounded(4)
+              .rounded(RADIUS.small)
               .hover(s => s.bg(t.hover))
               .cursor_pointer()
               .tooltip(isFolded ? "Expand sub-repositories" : "Collapse sub-repositories")
@@ -891,7 +1049,7 @@ export default class Spaces extends View {
                 cx.stop_propagation();
                 this.toggleSubrepos(w.id, cx);
               })
-              .child(svg(`mods/workspace-chrome/chevron-${isFolded ? "right" : "down"}.svg`).size(12).text_color(t.dim))
+              .child(Icon(isFolded ? "chevron-right" : "chevron-down", 12).text_color(t.dim))
           ))
       );
   }
@@ -926,11 +1084,11 @@ export default class Spaces extends View {
       changed = true;
     }
     if (changed) setShared("space.colors", kept);
-    return v_flex().size_full().min_h(0).bg(t.chrome).text_size(13)
-      .child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(11.5).text_color(t.dim)
+    return v_flex().size_full().min_h(0).bg(t.chrome).text_size(TEXT.body)
+      .child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(TEXT.caption).text_color(t.dim)
         .when(!collapsed, el => el.child("Spaces"))
-        .child(div().id("space-new").size(26).flex_none().flex().items_center().justify_center().rounded(6).hover(s => s.bg(t.hover).text_color(t.foreground))
-          .on_click(() => run("space.new")).child(svg("mods/workspace-chrome/plus.svg").size(14))))
+        .child(div().id("space-new").size(SIZE.icon).flex_none().flex().items_center().justify_center().rounded(RADIUS.control).hover(s => s.bg(t.hover).text_color(t.foreground))
+          .on_click(() => run("space.new")).child(Icon("plus", 14))))
       .child(v_flex().flex_1().min_h(0).px(8).pb(14).overflow_y_scrollbar().mode("always")
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
         .children(this.grouped(t, collapsed)));

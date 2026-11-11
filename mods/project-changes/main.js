@@ -1,6 +1,7 @@
-import { View, div, svg } from "gpui-kit";
+import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, appHome } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, appHome, window } from "herdr";
+import { TEXT, RADIUS, SIZE, Badge, Icon } from "./ui.js";
 
 function place(s, ps) {
   if (!s) return null;
@@ -181,23 +182,8 @@ export default class Changes extends View {
     // 2. Scan subdirectories (depth 3) for nested git repositories
     try {
       const candidatePaths = [];
-      if (on) {
-        const r = await exec("sh", ["-c", "find . -maxdepth 4 -name .git -print"], { cwd: cleanFolder, on });
-        if (r.code === 0 && r.stdout) {
-          const lines = r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-          for (const line of lines) {
-            const cleaned = line.replace(/\/\.git$/, "").replace(/^\.\//, "");
-            if (!cleaned) continue;
-            const full = norm(`${cleanFolder}/${cleaned}`);
-            if (
-              !candidatePaths.some((p) => p.toLowerCase() === full.toLowerCase()) &&
-              !repos.some((rep) => rep.path.toLowerCase() === full.toLowerCase())
-            ) {
-              candidatePaths.push(full);
-            }
-          }
-        }
-      } else {
+      const isWin = !on && window()?.platform === "windows";
+      if (isWin) {
         const home = appHome().replace(/\\/g, "/");
         const modScript = `${home}/mods/project-changes/scan.ps1`;
         const r = await exec("powershell", [
@@ -217,6 +203,23 @@ export default class Changes extends View {
             const full = norm(line);
             if (
               full &&
+              !candidatePaths.some((p) => p.toLowerCase() === full.toLowerCase()) &&
+              !repos.some((rep) => rep.path.toLowerCase() === full.toLowerCase())
+            ) {
+              candidatePaths.push(full);
+            }
+          }
+        }
+      } else {
+        // macOS, Linux, or remote machine
+        const r = await exec("sh", ["-c", "find . -maxdepth 4 -name .git -print"], { cwd: cleanFolder, on });
+        if (r.code === 0 && r.stdout) {
+          const lines = r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+          for (const line of lines) {
+            const cleaned = line.replace(/\/\.git$/, "").replace(/^\.\//, "");
+            if (!cleaned) continue;
+            const full = norm(`${cleanFolder}/${cleaned}`);
+            if (
               !candidatePaths.some((p) => p.toLowerCase() === full.toLowerCase()) &&
               !repos.some((rep) => rep.path.toLowerCase() === full.toLowerCase())
             ) {
@@ -285,9 +288,7 @@ export default class Changes extends View {
         cx.notify();
       })
       .child(
-        svg("mods/workspace-chrome/git-branch.svg")
-          .size(11)
-          .flex_none()
+        Icon("git-branch", 11)
           .text_color(t.accent)
       )
       .child(
@@ -295,15 +296,13 @@ export default class Changes extends View {
           .flex_1()
           .min_w(0)
           .truncate()
-          .text_size(11)
+          .text_size(TEXT.caption)
           .font_medium()
           .text_color(t.foreground)
           .child(displayName)
       )
       .child(
-        svg(`mods/workspace-chrome/chevron-${this.repoMenuOpen ? "up" : "down"}.svg`)
-          .size(10)
-          .flex_none()
+        Icon(this.repoMenuOpen ? "chevron-down" : "chevron-right", 10)
           .text_color(t.muted)
       );
   }
@@ -362,9 +361,7 @@ export default class Changes extends View {
                     .hover((s) => s.bg(t.hover))
                     .on_click((_e, cx) => this.selectRepo(repo.path, cx))
                     .child(
-                      svg("mods/workspace-chrome/git-branch.svg")
-                        .size(13)
-                        .flex_none()
+                      Icon("git-branch", 13)
                         .text_color(isSelected ? t.accent : t.muted)
                     )
                     .child(
@@ -375,7 +372,7 @@ export default class Changes extends View {
                         .child(
                           div()
                             .truncate()
-                            .text_size(11.5)
+                            .text_size(TEXT.label)
                             .font_medium()
                             .text_color(isSelected ? t.foreground : t.muted)
                             .child(repo.rel || repo.name)
@@ -384,7 +381,7 @@ export default class Changes extends View {
                           el.child(
                             div()
                               .truncate()
-                              .text_size(10)
+                              .text_size(TEXT.badge)
                               .text_color(t.dim)
                               .child(repo.branch)
                           )
@@ -392,9 +389,7 @@ export default class Changes extends View {
                     )
                     .when(isSelected, (el) =>
                       el.child(
-                        svg("mods/workspace-chrome/check.svg")
-                          .size(12)
-                          .flex_none()
+                        Icon("check", 12)
                           .text_color(t.accent)
                       )
                     );
@@ -481,15 +476,11 @@ export default class Changes extends View {
       .tooltip(isFolded ? `Expand ${dir.name}` : `Collapse ${dir.name}`)
       .on_click((_e, cx) => this.toggleFolder(dir.path, cx))
       .child(
-        svg(`mods/workspace-chrome/chevron-${isFolded ? "right" : "down"}.svg`)
-          .size(11)
-          .flex_none()
+        Icon(isFolded ? "chevron-right" : "chevron-down", 11)
           .text_color(t.dim)
       )
       .child(
-        svg("mods/workspace-chrome/folder.svg")
-          .size(13)
-          .flex_none()
+        Icon("folder", 13)
           .text_color(t.dim)
       )
       .child(
@@ -898,15 +889,14 @@ export default class Changes extends View {
                       .when(this.treeView, (el) => el.bg(t.accent))
                       .when(this.treeView, (el) =>
                         el.child(
-                          svg("mods/workspace-chrome/check.svg")
-                            .size(8)
+                          Icon("check", 8)
                             .text_color("#ffffff")
                         )
                       )
                   )
                   .child(
                     div()
-                      .text_size(10.5)
+                      .text_size(TEXT.caption)
                       .font_medium()
                       .text_color(this.treeView ? t.foreground : t.muted)
                       .child("Tree")
@@ -921,7 +911,7 @@ export default class Changes extends View {
                       .flex_none()
                       .items_center()
                       .justify_center()
-                      .rounded(5)
+                      .rounded(RADIUS.small)
                       .border_1()
                       .border_color(t.border)
                       .cursor_pointer()
@@ -929,9 +919,7 @@ export default class Changes extends View {
                       .tooltip("Collapse all folders")
                       .on_click((_e, cx) => this.collapseAll(cx))
                       .child(
-                        svg("mods/workspace-chrome/chevron-right.svg")
-                          .size(12)
-                          .flex_none()
+                        Icon("chevron-right", 12)
                           .text_color(t.muted)
                       )
                   )
@@ -942,7 +930,7 @@ export default class Changes extends View {
                       .flex_none()
                       .items_center()
                       .justify_center()
-                      .rounded(5)
+                      .rounded(RADIUS.small)
                       .border_1()
                       .border_color(t.border)
                       .cursor_pointer()
@@ -950,9 +938,7 @@ export default class Changes extends View {
                       .tooltip("Expand all folders")
                       .on_click((_e, cx) => this.expandAll(cx))
                       .child(
-                        svg("mods/workspace-chrome/chevron-down.svg")
-                          .size(12)
-                          .flex_none()
+                        Icon("chevron-down", 12)
                           .text_color(t.muted)
                       )
                   )

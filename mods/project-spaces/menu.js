@@ -1,6 +1,7 @@
-import { View, div, svg } from "gpui-kit";
+import { View, div } from "gpui-kit";
 import { v_flex, h_flex } from "gpui-base";
 import { run, props, closeOverlay, openOverlay, theme, notify } from "herdr";
+import { TEXT, RADIUS, SIZE, Icon } from "./ui.js";
 
 export default class SubrepoMenu extends View {
   init(_props, cx) {
@@ -16,24 +17,24 @@ export default class SubrepoMenu extends View {
     if (isGit) {
       items.push({
         label: "Switch branch…",
-        icon: "mods/workspace-chrome/git-branch.svg",
+        icon: "git-branch",
         action: "branch-switch",
       });
     }
     items.push(
       {
         label: "Open in new tab",
-        icon: "mods/workspace-chrome/plus.svg",
+        icon: "plus",
         action: "tab.new",
       },
       {
         label: "Split right",
-        icon: "mods/workspace-chrome/panel-right.svg",
+        icon: "panel-right",
         action: "pane.split",
       },
       {
         label: "Copy path",
-        icon: "mods/workspace-chrome/folder.svg",
+        icon: "copy",
         action: "copy",
       }
     );
@@ -51,8 +52,8 @@ export default class SubrepoMenu extends View {
       openOverlay({
         mod: "project-spaces",
         kind: "dialog",
-        width: 500,
-        height: 440,
+        width: 480,
+        height: 420,
         props: {
           role: "branch-switcher",
           sub: p.sub,
@@ -85,9 +86,13 @@ export default class SubrepoMenu extends View {
       .track_focus(this.handle)
       .w_full()
       .min_h(0)
-      .p(5)
+      .p(4)
+      .gap(1)
+      .rounded(RADIUS.row)
+      .border_1()
+      .border_color(t.border)
       .bg(t.popover)
-      .text_size(12.8)
+      .text_size(TEXT.menu)
       .on_key_down((e, cx) => {
         if (e.key === "down") this.at = (this.at + 1) % list.length;
         else if (e.key === "up") this.at = (this.at + list.length - 1) % list.length;
@@ -100,30 +105,35 @@ export default class SubrepoMenu extends View {
       .child(
         h_flex()
           .px(8)
-          .py(4)
+          .py(5)
           .items_center()
           .gap(6)
-          .text_size(11)
+          .text_size(TEXT.caption)
           .text_color(t.dim)
-          .child(svg("mods/workspace-chrome/folder.svg").size(11).text_color(t.dim))
-          .child(div().truncate().child(p.sub?.name ?? (p.isGit === false ? "Folder" : "Sub-repository")))
+          .child(Icon(p.isGit === false ? "folder" : "branch", 12).text_color(t.dim))
+          .child(
+            div()
+              .truncate()
+              .font_medium()
+              .child(p.sub?.name ?? (p.isGit === false ? "Folder" : "Sub-repository"))
+          )
       )
       .child(div().mx(4).my(2).h(1).bg(t.border))
       .children(
         list.map((it, i) =>
           h_flex()
             .id(`smi-${i}`)
-            .h(30)
+            .h(SIZE.menu)
             .px(8)
-            .gap(9)
-            .rounded(6)
+            .gap(8)
+            .rounded(RADIUS.control)
             .items_center()
             .text_color(t.foreground)
             .cursor_pointer()
             .when(i === this.at, (el) => el.bg(t.selected))
-            .hover((s) => s.bg(t.hover))
+            .when(i !== this.at, (el) => el.hover((s) => s.bg(t.hover)))
             .on_click((_e, cx) => this.choose(i, cx))
-            .child(svg(it.icon).size(14).flex_none().text_color(t.muted))
+            .child(Icon(it.icon, 14).text_color(t.muted))
             .child(div().flex_1().child(it.label))
         )
       );

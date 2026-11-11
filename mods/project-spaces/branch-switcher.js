@@ -1,6 +1,7 @@
 import { View, div, svg } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar } from "gpui-base";
 import { run, props, closeOverlay, theme, exec } from "herdr";
+import { TEXT, RADIUS, SIZE, Badge, Icon } from "./ui.js";
 
 export default class BranchSwitcher extends View {
   init(_props, cx) {
@@ -125,7 +126,6 @@ export default class BranchSwitcher extends View {
             isCurrent: isHead,
           });
         } else if (isRemote) {
-          // Extract simple branch name from remote ref (after refs/remotes/<remote>/)
           const remotePath = fullRef.slice("refs/remotes/".length);
           const slashIdx = remotePath.indexOf("/");
           const remoteName = slashIdx !== -1 ? remotePath.slice(0, slashIdx) : "";
@@ -143,23 +143,30 @@ export default class BranchSwitcher extends View {
         }
       }
 
-      // If no current branch found (detached HEAD), get short commit hash
       if (!foundHead) {
         const headCheck = await exec(
           "git",
           ["rev-parse", "--short", "HEAD"],
           { cwd, on }
         );
-        if (headCheck.code === 0 && headCheck.stdout.trim()) {
-          this.currentBranch = `detached (${headCheck.stdout.trim()})`;
+        if (headCheck.code === 0) {
+          this.currentBranch = `HEAD (${headCheck.stdout.trim()})`;
         }
       }
 
-      // Prioritize: local branches first, then remote branches not existing locally
-      const localNames = new Set(locals.map((b) => b.simpleName));
+      // De-duplicate: filter out remotes that have an identical local branch
+      const localNames = new Set(locals.map((l) => l.name));
       const filteredRemotes = remotes.filter(
-        (b) => !localNames.has(b.simpleName)
+        (r) => !localNames.has(r.simpleName)
       );
+
+      // Sort: current branch first, then locals alphabetically, then remotes alphabetically
+      locals.sort((a, b) => {
+        if (a.isCurrent) return -1;
+        if (b.isCurrent) return 1;
+        return a.name.localeCompare(b.name);
+      });
+      filteredRemotes.sort((a, b) => a.name.localeCompare(b.name));
 
       this.branches = [...locals, ...filteredRemotes];
     } catch {}
@@ -171,15 +178,15 @@ export default class BranchSwitcher extends View {
     return this.branches.filter(
       (b) =>
         b.name.toLowerCase().includes(q) ||
-        b.simpleName.toLowerCase().includes(q)
+        (b.simpleName && b.simpleName.toLowerCase().includes(q))
     );
   }
 
-  async checkout(item, cx) {
-    if (!item || this.busy) return;
+  checkout(branch, cx) {
     const p = props() ?? {};
+    if (!p.folder || this.busy) return;
 
-    if (item.isCurrent) {
+    if (branch.isCurrent) {
       closeOverlay(p.overlay);
       return;
     }
@@ -188,55 +195,48 @@ export default class BranchSwitcher extends View {
     this.error = "";
     cx.notify();
 
-    try {
-      let args;
-      if (item.isRemote) {
-        const localExists = this.branches.some(
-          (b) => !b.isRemote && b.simpleName === item.simpleName
-        );
-        if (localExists) {
-          args = ["checkout", item.simpleName];
-        } else {
-          args = ["checkout", "-b", item.simpleName, "--track", item.name];
+    cx.spawn(async (cx) => {
+      try {
+        let checkoutTarget = branch.name;
+        if (branch.isRemote && branch.simpleName) {
+          checkoutTarget = branch.simpleName;
         }
-      } else {
-        args = ["checkout", item.simpleName];
-      }
 
-      const r = await exec("git", args, {
-        cwd: p.folder,
-        on: p.machine,
-      });
+        const r = await exec("git", ["checkout", checkoutTarget], {
+          cwd: p.folder,
+          on: p.machine,
+        });
 
-      this.busy = false;
+        if (r.code !== 0) {
+          this.error = (r.stderr || r.stdout || "Checkout failed").trim();
+          this.busy = false;
+          cx.notify();
+          return;
+        }
 
-      if (r.code === 0) {
         closeOverlay(p.overlay);
-      } else {
-        this.error = (r.stderr || r.stdout || "Failed to switch branch").trim();
+      } catch (err) {
+        this.error = err.message || "Failed to switch branch";
+        this.busy = false;
         cx.notify();
       }
-    } catch (e) {
-      this.busy = false;
-      this.error = String(e?.message ?? e);
-      cx.notify();
-    }
+    });
   }
 
   key(e, cx) {
     if (e.key === "escape") {
       cx.stop_propagation();
-      return closeOverlay(props()?.overlay);
+      closeOverlay(props()?.overlay);
+      return;
     }
-    const list = this.shown();
-    if (!list.length) return;
 
+    const list = this.shown();
     if (e.key === "down") {
-      this.at = (this.at + 1) % list.length;
+      this.at = (this.at + 1) % Math.max(1, list.length);
       cx.stop_propagation();
       cx.notify();
     } else if (e.key === "up") {
-      this.at = (this.at + list.length - 1) % list.length;
+      this.at = (this.at + list.length - 1) % Math.max(1, list.length);
       cx.stop_propagation();
       cx.notify();
     } else if (e.key === "enter") {
@@ -255,10 +255,13 @@ export default class BranchSwitcher extends View {
       .track_focus(this.handle)
       .on_key_down((e, cx) => this.key(e, cx))
       .size_full()
-      .p(16)
+      .p(14)
       .gap(10)
       .bg(t.popover)
-      .text_size(13)
+      .rounded(RADIUS.row)
+      .border_1()
+      .border_color(t.border)
+      .text_size(TEXT.body)
       .child(
         h_flex()
           .items_center()
@@ -267,26 +270,23 @@ export default class BranchSwitcher extends View {
             h_flex()
               .gap(8)
               .items_center()
-              .child(
-                svg("mods/workspace-chrome/git-branch.svg")
-                  .size(16)
-                  .text_color(t.accent)
-              )
+              .child(Icon("git-branch", 16).text_color(t.accent))
               .child(
                 v_flex()
                   .child(
                     div()
                       .font_semibold()
+                      .text_size(TEXT.body)
                       .text_color(t.foreground)
                       .child(`Switch branch: ${p.sub?.name ?? "Repository"}`)
                   )
                   .child(
                     div()
-                      .text_size(11)
+                      .text_size(TEXT.caption)
                       .text_color(t.dim)
                       .child(
                         this.currentBranch
-                          ? `Current branch: ${this.currentBranch}`
+                          ? `Current: ${this.currentBranch}`
                           : "Loading branches…"
                       )
                   )
@@ -294,59 +294,62 @@ export default class BranchSwitcher extends View {
           )
           .child(
             h_flex()
-              .gap(8)
+              .gap(6)
               .items_center()
               .when(this.fetching, (el) =>
                 el
                   .child(
-                    svg("mods/workspace-chrome/spinner.svg")
+                    svg("mods/project-spaces/icons/chevron-down.svg")
                       .size(12)
-                      .spin(900)
                       .text_color(t.dim)
                   )
                   .child(
                     div()
-                      .text_size(11)
+                      .text_size(TEXT.caption)
                       .text_color(t.dim)
                       .child("Fetching remotes…")
                   )
               )
               .child(
                 h_flex()
-                  .size(24)
-                  .rounded(4)
+                  .size(SIZE.iconSmall)
+                  .rounded(RADIUS.small)
                   .items_center()
                   .justify_center()
                   .hover((s) => s.bg(t.hover))
                   .cursor_pointer()
                   .on_click(() => closeOverlay(p.overlay))
                   .child(
-                    svg("mods/workspace-chrome/x.svg").size(14).text_color(t.dim)
+                    div()
+                      .text_size(TEXT.caption)
+                      .text_color(t.dim)
+                      .child("✕")
                   )
               )
           )
       )
       .child(
         Input.new(this.input)
-          .h(32)
+          .h(30)
           .px(10)
           .items_center()
-          .rounded(6)
+          .rounded(RADIUS.control)
           .border(1)
           .border_color(this.inputFocused ? t.accent : t.input)
           .bg(t.background)
+          .text_size(TEXT.body)
           .text_color(t.foreground)
       )
       .when(Boolean(this.error), (el) =>
         el.child(
           div()
             .p(8)
-            .rounded(6)
+            .rounded(RADIUS.control)
             .bg(t.surface)
             .border(1)
-            .border_color(t.blocked)
-            .text_size(11.5)
-            .text_color(t.blocked)
+            .border_color(t.blocked ?? "#ef4444")
+            .text_size(TEXT.caption)
+            .text_color(t.blocked ?? "#ef4444")
             .child(this.error)
         )
       )
@@ -367,55 +370,35 @@ export default class BranchSwitcher extends View {
                   return h_flex()
                     .id(`branch-${i}`)
                     .flex_none()
-                    .h(32)
-                    .px(10)
+                    .h(SIZE.row)
+                    .px(8)
                     .gap(8)
                     .items_center()
-                    .rounded(6)
+                    .rounded(RADIUS.control)
                     .cursor_pointer()
                     .when(on, (el) => el.bg(t.selected))
                     .when(!on, (el) => el.hover((s) => s.bg(t.hover)))
                     .on_click(() => this.checkout(b, cx))
                     .child(
-                      svg("mods/workspace-chrome/git-branch.svg")
-                        .size(13)
-                        .flex_none()
-                        .text_color(b.isCurrent ? t.accent : t.dim)
+                      Icon("git-branch", 13).text_color(
+                        b.isCurrent ? t.accent : t.dim
+                      )
                     )
                     .child(
                       div()
                         .flex_1()
                         .min_w(0)
                         .truncate()
+                        .text_size(TEXT.body)
                         .text_color(b.isCurrent ? t.accent : t.foreground)
                         .font_medium()
                         .child(b.name)
                     )
                     .when(b.isCurrent, (el) =>
-                      el.child(
-                        div()
-                          .flex_none()
-                          .px(6)
-                          .py(1)
-                          .rounded(4)
-                          .bg(t.raised)
-                          .text_size(10.5)
-                          .text_color(t.accent)
-                          .child("current")
-                      )
+                      el.child(Badge("current", "accent"))
                     )
                     .when(!b.isCurrent && b.isRemote, (el) =>
-                      el.child(
-                        div()
-                          .flex_none()
-                          .px(6)
-                          .py(1)
-                          .rounded(4)
-                          .bg(t.surface)
-                          .text_size(10.5)
-                          .text_color(t.dim)
-                          .child("remote")
-                      )
+                      el.child(Badge("remote", "dim"))
                     );
                 })
               )
@@ -425,6 +408,7 @@ export default class BranchSwitcher extends View {
                     .p(12)
                     .text_center()
                     .text_color(t.dim)
+                    .text_size(TEXT.caption)
                     .child(
                       this.fetching
                         ? "Loading branches…"
@@ -439,7 +423,7 @@ export default class BranchSwitcher extends View {
         h_flex()
           .justify_between()
           .items_center()
-          .text_size(11)
+          .text_size(TEXT.caption)
           .text_color(t.dim)
           .child(
             div().child(
