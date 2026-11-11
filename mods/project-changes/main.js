@@ -1,6 +1,6 @@
-import { View, div } from "gpui-kit";
+﻿import { View, div } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input, Scrollbar, v_virtual_list } from "gpui-base";
-import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, appHome, window } from "herdr";
+import { spaces, panes, focused, exec, readTextFile, watchFolder, theme, settings, appHome, window, shared, setShared } from "herdr";
 import { TEXT, RADIUS, SIZE, Badge, Icon } from "./ui.js";
 
 function place(s, ps) {
@@ -771,6 +771,11 @@ export default class Changes extends View {
   }
 
   render(cx) {
+    const targetRepo = shared("project_changes.target_repo");
+    if (targetRepo && targetRepo !== this.selectedRepoPath) {
+      setShared("project_changes.target_repo", null);
+      this.selectRepo(targetRepo, cx);
+    }
     if (key() !== this.context) this.refresh(cx);
     const t = theme(), add = this.files.reduce((n, f) => n + f.add, 0), del = this.files.reduce((n, f) => n + f.del, 0);
     const enabled = Boolean(this.message.trim() && this.root && !this.busy && !this.loading);
@@ -1057,3 +1062,4 @@ export default class Changes extends View {
       );
   }
 }
+

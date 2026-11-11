@@ -1,4 +1,4 @@
-// Design tokens and reusable UI primitives for project-changes
+﻿// Design tokens and reusable UI primitives for project-changes
 // Inspired by the Herdr Orca layout conventions
 import { div, svg } from "gpui-kit";
 import { h_flex, v_flex, Popover } from "gpui-base";
@@ -67,7 +67,8 @@ export function IconButton({ id, icon, label, onClick, iconSize = 14, muted = fa
   const t = theme();
   return div()
     .id(id)
-    .size(SIZE.icon)
+    .w(SIZE.icon)
+    .h(SIZE.icon)
     .flex_none()
     .flex()
     .items_center()
@@ -116,3 +117,4 @@ export function PopoverMenu({ id, open, onOpenChange, focus, trigger, children, 
     .trigger(trigger)
     .when(open, (el) => el.content(body));
 }
+

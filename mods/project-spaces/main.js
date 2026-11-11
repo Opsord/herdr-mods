@@ -1,10 +1,10 @@
-// Workspace spaces: stable colored avatars, worktrees under their checkout,
+﻿// Workspace spaces: stable colored avatars, worktrees under their checkout,
 // grouped by machine when more than one is known. After a space's name, the repo
 // its first terminal is in now, only where unusual: branch, ahead/behind. Agent state lives in the agents list, not here. Click to
 // switch, right-click for its menu, drag to reorder.
 
 import { View, div } from "gpui-kit";
-import { v_flex, h_flex } from "gpui-base";
+import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { spaces, machines, panes, run, openOverlay, exec, hc, theme, shared, setShared, watchFolder, window, layout, appHome, readTextFile, props } from "herdr";
 import SubrepoMenu from "./menu.js";
 import BranchSwitcher from "./branch-switcher.js";
@@ -87,6 +87,14 @@ export default class Spaces extends View {
     this.subreposConfig = { max_depth: 2 };
     this.subreposFolded = new Set(JSON.parse(localStorage.getItem("spaces.subrepos_folded") ?? "[]"));
     this.subfoldersFolded = new Set(JSON.parse(localStorage.getItem("spaces.subfolders_folded") ?? "[]"));
+    this.searchOpen = false;
+    this.searchQuery = "";
+    this.lastSharedGitRefresh = null;
+    this.searchInput = InputState.new({ placeholder: "Filter repositories…" });
+    this.searchInput.on("change", (_e, cx) => {
+      this.searchQuery = (this.searchInput.value() || "").trim();
+      cx.notify();
+    });
     this.loadSubreposConfig(cx);
     this.checkSubrepos(cx);
     cx.timer.every(15000, cx => this.refreshMachines(cx));
@@ -409,7 +417,7 @@ export default class Spaces extends View {
       mod: "project-spaces",
       kind: "popup",
       width: 220,
-      height: 160,
+      height: 320,
       props: {
         role: "menu",
         sub,
@@ -531,9 +539,10 @@ export default class Spaces extends View {
     const rows = [];
     const dirList = [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
     const repoList = [...node.repos].sort((a, b) => a.name.localeCompare(b.name));
+    const q = (this.searchQuery || "").toLowerCase();
 
     for (const dir of dirList) {
-      const isFolded = this.subfoldersFolded.has(`${space.id}:${dir.relPath}`);
+      const isFolded = q ? false : this.subfoldersFolded.has(`${space.id}:${dir.relPath}`);
       rows.push(this.subfolderRow(space, dir, depth, activeCwds, t));
       if (!isFolded) {
         rows.push(...this.renderSubrepoTree(space, dir, depth + 1, true, activeCwds, t, ps));
@@ -599,6 +608,22 @@ export default class Spaces extends View {
       );
   }
 
+  focusPaneOrAgent(space, targetPane, cx) {
+    if (!targetPane) return;
+    if (!space.active) {
+      run("space.select", { id: space.id });
+    }
+    const activeTab = space.tabs?.find((t) => t.active);
+    if (!activeTab || activeTab.id !== targetPane.tab) {
+      run("tab.select", { id: targetPane.tab });
+    }
+    run("pane.focus", { pane: targetPane.pane });
+    if (targetPane.terminal && (targetPane.status || targetPane.program?.agent || targetPane.app)) {
+      run("agent.focus", { terminal: targetPane.terminal });
+    }
+    cx.notify();
+  }
+
   subrepoLiveBadges(space, subPath, ps, isCurrent, t) {
     const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
     const targetNorm = norm(subPath);
@@ -626,8 +651,9 @@ export default class Spaces extends View {
 
     const badges = [];
 
-    // Terminal count badge
+    // Terminal count badge (interactive: click to focus pane)
     if (terminalsCount > 0) {
+      const firstTerm = matchingPanes.find((p) => p.terminal) || matchingPanes[0];
       badges.push(
         h_flex()
           .gap(3)
@@ -637,7 +663,13 @@ export default class Spaces extends View {
           .rounded(RADIUS.small)
           .border_1()
           .border_color(isCurrent ? t.accent : t.border)
-          .tooltip(`${terminalsCount} terminal${terminalsCount === 1 ? "" : "s"} open in this repository`)
+          .cursor_pointer()
+          .hover((s) => s.bg(t.hover))
+          .tooltip(`${terminalsCount} terminal${terminalsCount === 1 ? "" : "s"} open (click to focus)`)
+          .on_click((_e, cx) => {
+            cx.stop_propagation();
+            this.focusPaneOrAgent(space, firstTerm, cx);
+          })
           .child(Icon("terminal", 10).text_color(isCurrent ? t.accent : t.dim))
           .child(
             div()
@@ -649,12 +681,16 @@ export default class Spaces extends View {
       );
     }
 
-    // Agent status badge
+    // Agent status badge (interactive: click to focus agent)
     if (agentsInRepo.length > 0) {
       let statusColor = t.dim;
       if (mostUrgent === "blocked") statusColor = t.blocked ?? "#ef4444";
       else if (mostUrgent === "working") statusColor = t.ansi3 ?? "#e3814f";
       else if (mostUrgent === "done") statusColor = t.ansi2 ?? "#3fae6a";
+
+      const targetAgent = agentsInRepo.find(
+        (a) => (a.status ?? (a.program?.agent ? "working" : "idle")) === mostUrgent
+      ) || agentsInRepo[0];
 
       const agentName = agentsInRepo.length === 1
         ? (agentsInRepo[0].program?.name || agentsInRepo[0].app || "Agent")
@@ -671,7 +707,13 @@ export default class Spaces extends View {
           .rounded(RADIUS.small)
           .border_1()
           .border_color(statusColor)
-          .tooltip(`${agentName} (${mostUrgent ?? "idle"})`)
+          .cursor_pointer()
+          .hover((s) => s.bg(t.hover))
+          .tooltip(`${agentName} (${mostUrgent ?? "idle"}) - click to focus`)
+          .on_click((_e, cx) => {
+            cx.stop_propagation();
+            this.focusPaneOrAgent(space, targetAgent, cx);
+          })
           .child(Icon("bot", 11).text_color(statusColor))
           .child(
             div()
@@ -752,6 +794,52 @@ export default class Spaces extends View {
               .text_color(isCurrent ? t.foreground : t.muted)
               .child(sub.name)
           )
+          .child(
+            h_flex()
+              .flex_none()
+              .gap(1)
+              .items_center()
+              .child(
+                IconButton({
+                  id: `new-tab-${sub.name}`,
+                  icon: "plus",
+                  label: "New tab in this repo",
+                  iconSize: 11,
+                  muted: true,
+                  onClick: (cx) => {
+                    if (!space.active) run("space.select", { id: space.id });
+                    run("tab.new", { space: space.id, folder: sub.path, name: sub.name });
+                    cx.notify();
+                  },
+                })
+              )
+              .child(
+                IconButton({
+                  id: `split-right-${sub.name}`,
+                  icon: "panel-right",
+                  label: "Split terminal right",
+                  iconSize: 11,
+                  muted: true,
+                  onClick: (cx) => {
+                    if (!space.active) run("space.select", { id: space.id });
+                    run("terminal.open", { folder: sub.path, place: "right" });
+                    cx.notify();
+                  },
+                })
+              )
+              .child(
+                IconButton({
+                  id: `subrepo-menu-btn-${sub.name}`,
+                  icon: "ellipsis",
+                  label: "More options…",
+                  iconSize: 11,
+                  muted: true,
+                  onClick: (_cx) => {
+                    this.subrepoMenu(space, sub);
+                  },
+                })
+              )
+          )
       )
       .when(Boolean(subGit), (el) => el.child(subGit));
   }
@@ -760,15 +848,32 @@ export default class Spaces extends View {
   grouped(t, collapsed) {
     const rows = this.ordered();
     const ps = panes();
+    const q = (this.searchQuery || "").toLowerCase();
+
     const draw = (r) => {
       if (collapsed) return [this.compact(r, t)];
       const mainRow = this.row(r, t, ps);
 
-      const isFolded = this.subreposFolded.has(r.w.id);
-      if (isFolded) return [mainRow];
-
-      const subs = this.subrepos[r.w.id] ?? [];
+      let subs = this.subrepos[r.w.id] ?? [];
       const isScanning = this.subreposScanning.has(r.w.id);
+
+      if (q) {
+        const spaceMatches = (r.w.name || "").toLowerCase().includes(q);
+        subs = subs.filter((s) => {
+          const branch = this.git[JSON.stringify([s.machine, s.path])]?.branch || "";
+          return (
+            (s.name || "").toLowerCase().includes(q) ||
+            (s.relPath || "").toLowerCase().includes(q) ||
+            branch.toLowerCase().includes(q)
+          );
+        });
+        if (!spaceMatches && !subs.length) {
+          return [];
+        }
+      }
+
+      const isFolded = q ? false : this.subreposFolded.has(r.w.id);
+      if (isFolded) return [mainRow];
 
       const activeTab = r.w.tabs?.find((tab) => tab.active);
       const norm = (p) => (p || "").replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
@@ -884,6 +989,7 @@ export default class Spaces extends View {
 
     const badges = [];
     if (terminalsCount > 0) {
+      const firstTerm = matchingPanes.find((p) => p.terminal) || matchingPanes[0];
       badges.push(
         h_flex()
           .gap(3)
@@ -893,7 +999,13 @@ export default class Spaces extends View {
           .rounded(RADIUS.small)
           .border_1()
           .border_color(t.border)
-          .tooltip(`${terminalsCount} terminal${terminalsCount === 1 ? "" : "s"} in this space`)
+          .cursor_pointer()
+          .hover((s) => s.bg(t.hover))
+          .tooltip(`${terminalsCount} terminal${terminalsCount === 1 ? "" : "s"} in this space (click to focus)`)
+          .on_click((_e, cx) => {
+            cx.stop_propagation();
+            this.focusPaneOrAgent(space, firstTerm, cx);
+          })
           .child(Icon("terminal", 10).text_color(t.dim))
           .child(
             div()
@@ -911,6 +1023,10 @@ export default class Spaces extends View {
       else if (mostUrgent === "working") statusColor = t.ansi3 ?? "#e3814f";
       else if (mostUrgent === "done") statusColor = t.ansi2 ?? "#3fae6a";
 
+      const targetAgent = agentsInSpace.find(
+        (a) => (a.status ?? (a.program?.agent ? "working" : "idle")) === mostUrgent
+      ) || agentsInSpace[0];
+
       const agentName = agentsInSpace.length === 1
         ? (agentsInSpace[0].program?.name || agentsInSpace[0].app || "Agent")
         : `${agentsInSpace.length} agents`;
@@ -926,7 +1042,13 @@ export default class Spaces extends View {
           .rounded(RADIUS.small)
           .border_1()
           .border_color(statusColor)
-          .tooltip(`${agentName} (${mostUrgent ?? "idle"})`)
+          .cursor_pointer()
+          .hover((s) => s.bg(t.hover))
+          .tooltip(`${agentName} (${mostUrgent ?? "idle"}) - click to focus`)
+          .on_click((_e, cx) => {
+            cx.stop_propagation();
+            this.focusPaneOrAgent(space, targetAgent, cx);
+          })
           .child(Icon("bot", 11).text_color(statusColor))
           .child(
             div()
@@ -1070,6 +1192,12 @@ export default class Spaces extends View {
 
   render(cx) {
     if (this.delegate) return this.delegate.render(cx);
+    const refreshReq = shared("project_spaces.refresh_git");
+    if (refreshReq && refreshReq !== this.lastSharedGitRefresh) {
+      this.lastSharedGitRefresh = refreshReq;
+      const keys = Object.keys(this.git);
+      if (keys.length) this.refreshGit(keys, cx);
+    }
     const t = theme();
     const collapsed = narrow();
     const palette = ["ansi6", "ansi3", "ansi4", "ansi5", "ansi2", "ansi1"];
@@ -1085,12 +1213,99 @@ export default class Spaces extends View {
     }
     if (changed) setShared("space.colors", kept);
     return v_flex().size_full().min_h(0).bg(t.chrome).text_size(TEXT.body)
-      .child(h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(TEXT.caption).text_color(t.dim)
-        .when(!collapsed, el => el.child("Spaces"))
-        .child(div().id("space-new").size(SIZE.icon).flex_none().flex().items_center().justify_center().rounded(RADIUS.control).hover(s => s.bg(t.hover).text_color(t.foreground))
-          .on_click(() => run("space.new")).child(Icon("plus", 14))))
+      .child(
+        h_flex().h(31).pl(16).pr(10).items_center().justify_between().text_size(TEXT.caption).text_color(t.dim)
+          .when(!collapsed, el => el.child("Spaces"))
+          .child(
+            h_flex().gap(2).items_center()
+              .when(!collapsed, el => el.child(
+                IconButton({
+                  id: "toggle-search",
+                  icon: "search",
+                  label: "Filter spaces and repositories",
+                  iconSize: 13,
+                  muted: !this.searchOpen,
+                  onClick: (cx) => {
+                    this.searchOpen = !this.searchOpen;
+                    if (!this.searchOpen) {
+                      this.searchQuery = "";
+                      this.searchInput?.set_value("");
+                    }
+                    cx.notify();
+                  }
+                })
+              ))
+              .child(
+                IconButton({
+                  id: "space-new",
+                  icon: "plus",
+                  label: "New space",
+                  iconSize: 14,
+                  muted: true,
+                  onClick: () => run("space.new")
+                })
+              )
+          )
+      )
+      .when(this.searchOpen && !collapsed, el =>
+        el.child(
+          h_flex()
+            .h(28)
+            .mx(8)
+            .mb(6)
+            .px(8)
+            .gap(6)
+            .items_center()
+            .rounded(RADIUS.control)
+            .border_1()
+            .border_color(t.border)
+            .bg(t.raised)
+            .on_key_down((e, cx) => {
+              if (e.key === "escape") {
+                this.searchOpen = false;
+                this.searchQuery = "";
+                this.searchInput?.set_value("");
+                cx.stop_propagation();
+                cx.notify();
+              }
+            })
+            .child(Icon("search", 12).text_color(t.dim))
+            .child(
+              div()
+                .flex_1()
+                .min_w(0)
+                .h_full()
+                .flex()
+                .items_center()
+                .child(
+                  Input.new(this.searchInput)
+                    .h_full()
+                    .text_size(TEXT.caption)
+                    .text_color(t.foreground)
+                )
+            )
+            .when(Boolean(this.searchQuery), e =>
+              e.child(
+                IconButton({
+                  id: "clear-search",
+                  icon: "x",
+                  label: "Clear filter",
+                  iconSize: 11,
+                  muted: true,
+                  onClick: (cx) => {
+                    this.searchQuery = "";
+                    this.searchInput?.set_value("");
+                    cx.notify();
+                  }
+                })
+              )
+            )
+        )
+      )
       .child(v_flex().flex_1().min_h(0).px(8).pb(14).overflow_y_scrollbar().mode("always")
         .on_mouse_up("left", (_e, cx) => { this.pressed = null; cx.notify(); })
         .children(this.grouped(t, collapsed)));
   }
 }
+
+
